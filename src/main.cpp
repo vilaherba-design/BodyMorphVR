@@ -1455,11 +1455,13 @@ namespace
 	}
 
 	// [any thread] A form by its id, or null. (Needs the two global form-map ids; without them it logs once and returns null instead of ending the game.)
-	RE::TESForm* FormById(std::uint32_t a_id)
+	bool FormLookupAvailable()
 	{
 		static const bool ok = HaveIds({ 422985, 691815 }, "lookup of forms by id");
-		return ok ? RE::TESForm::GetFormByID(a_id) : nullptr;
+		return ok;
 	}
+
+	RE::TESForm* FormById(std::uint32_t a_id) { return FormLookupAvailable() ? RE::TESForm::GetFormByID(a_id) : nullptr; }
 
 	template <class T>
 	T* FormById(std::uint32_t a_id)
@@ -1680,8 +1682,8 @@ namespace
 			g_gen.logLimit = std::clamp(ini.GetInt("BodyGen", "iLogActors", 60), 0, 5000);
 			const int seed = ini.GetInt("BodyGen", "iSeed", 0);
 			g_gen.rng.seed(seed ? static_cast<std::uint32_t>(seed) : std::random_device{}());
-			if (!HaveIds({ 711558 }, "BodyGen (plugin list)") || !AddressIds() || !FormById(0x14)) {
-				return;  // (FormById logs by itself when its ids are missing)
+			if (!HaveIds({ 711558 }, "BodyGen (plugin list)") || !FormLookupAvailable()) {
+				return;  // (both log the ids that are missing)
 			}
 
 			std::error_code ec;
