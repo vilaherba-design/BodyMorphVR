@@ -23,29 +23,39 @@ if ($LASTEXITCODE) { throw "configure failed" }
 cmake --build "$W\build" --config Release -- /m /v:m
 if ($LASTEXITCODE) { throw "build failed" }
 $dll = "$W\build\Release\BodyMorphVR.dll"
-$zip = Join-Path $Out "BodyMorphVR-0.6.3-bodygen.zip"
+$zip = Join-Path $Out "BodyMorphVR-0.7.0.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $z = [System.IO.Compression.ZipFile]::Open($zip, "Create")
-$files = @{
-  "F4SE/Plugins/BodyMorphVR.dll" = $dll
-  "F4SE/Plugins/BodyMorphVR.pdb" = "$W\build\Release\BodyMorphVR.pdb"
-  "F4SE/Plugins/BodyMorphVR.ini" = "$W\data\BodyMorphVR.ini"
-  "F4SE/Plugins/BodyMorphVR_LICENSE.txt" = "$W\LICENSE"
-  "F4SE/Plugins/BodyMorphVR_README.txt" = "$W\README.md"
-  "Scripts/BodyGen.pex" = "$W\data\Scripts\BodyGen.pex"
-  "Source/Scripts/BodyGen.psc" = "$W\data\Source\Scripts\BodyGen.psc"
-  "F4SE/Plugins/BodyMorphVR_examples/BodyGen/Loose/BodyMorphVR_example_templates.ini" = "$W\examples\BodyGen\Loose\BodyMorphVR_example_templates.ini"
-  "F4SE/Plugins/BodyMorphVR_examples/BodyGen/Loose/BodyMorphVR_example_morphs.ini" = "$W\examples\BodyGen\Loose\BodyMorphVR_example_morphs.ini"
+$C = "00 Core/"
+$files = [ordered]@{
+  "fomod/info.xml" = "$W\fomod\info.xml"
+  "fomod/ModuleConfig.xml" = "$W\fomod\ModuleConfig.xml"
+  "${C}F4SE/Plugins/BodyMorphVR.dll" = $dll
+  "${C}F4SE/Plugins/BodyMorphVR.pdb" = "$W\build\Release\BodyMorphVR.pdb"
+  "${C}F4SE/Plugins/BodyMorphVR.ini" = "$W\data\BodyMorphVR.ini"
+  "${C}F4SE/Plugins/BodyMorphVR_LICENSE.txt" = "$W\LICENSE"
+  "${C}F4SE/Plugins/BodyMorphVR_README.txt" = "$W\README.md"
+  "${C}Scripts/BodyGen.pex" = "$W\data\Scripts\BodyGen.pex"
+  "${C}Source/Scripts/BodyGen.psc" = "$W\data\Source\Scripts\BodyGen.psc"
+  "10 Example/F4SE/Plugins/F4EE/BodyGen/Loose/BodyMorphVR_example_templates.ini" = "$W\examples\BodyGen\Loose\BodyMorphVR_example_templates.ini"
+  "10 Example/F4SE/Plugins/F4EE/BodyGen/Loose/BodyMorphVR_example_morphs.ini" = "$W\examples\BodyGen\Loose\BodyMorphVR_example_morphs.ini"
+}
+foreach ($v in @("x1", "x2")) {
+  foreach ($n in @("Silhouette_templates.ini", "Silhouette_morphs.ini")) {
+    $files["10 Silhouette $v/F4SE/Plugins/F4EE/BodyGen/Loose/$n"] = "$W\bodygen\Silhouette-$v\$n"
+  }
+  $files["10 Silhouette $v/F4SE/Plugins/BodyMorphVR_Silhouette_README.txt"] = "$W\bodygen\Silhouette_README.txt"
+  $files["10 Silhouette $v/F4SE/Plugins/BodyMorphVR_Silhouette_LICENSE_GPL-3.0.txt"] = "$W\bodygen\Silhouette_LICENSE_GPL-3.0.txt"
 }
 # GPL: the port's own source goes inside the mod as a nested zip
 $srcZip = Join-Path $W "BodyMorphVR_source.zip"
 $sz = [System.IO.Compression.ZipFile]::Open($srcZip, "Create")
-foreach ($f in @("CMakeLists.txt", "vcpkg.json", "build.ps1", "README.md", "LICENSE", "src/main.cpp", "src/pch.h", "src/TriFile.h", "src/TriFile.cpp", "src/MorphApply.h", "src/MorphList.h", "src/MorphStore.h", "src/BodyGenIni.h", "src/IniFile.h", "src/TriPath.h", "src/HolderScan.h", "data/BodyMorphVR.ini", "data/Scripts/BodyGen.pex", "data/Source/Scripts/BodyGen.psc", "tools/make_bodygen_pex.py", "examples/BodyGen/Loose/BodyMorphVR_example_templates.ini", "examples/BodyGen/Loose/BodyMorphVR_example_morphs.ini", "tests/run.sh", "tests/tri_test.cpp")) {
+foreach ($f in @("CMakeLists.txt", "vcpkg.json", "build.ps1", "README.md", "docs/DEVELOPMENT.md", "LICENSE", "src/main.cpp", "src/pch.h", "src/TriFile.h", "src/TriFile.cpp", "src/MorphApply.h", "src/MorphList.h", "src/MorphStore.h", "src/BodyGenIni.h", "src/IniFile.h", "src/TriPath.h", "src/HolderScan.h", "data/BodyMorphVR.ini", "data/Scripts/BodyGen.pex", "data/Source/Scripts/BodyGen.psc", "tools/make_bodygen_pex.py", "tools/scale_templates.py", "examples/BodyGen/Loose/BodyMorphVR_example_templates.ini", "examples/BodyGen/Loose/BodyMorphVR_example_morphs.ini", "fomod/info.xml", "fomod/ModuleConfig.xml", "tests/run.sh", "tests/tri_test.cpp")) {
   [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($sz, (Join-Path $W $f), "BodyMorphVR/$f")
 }
 $sz.Dispose()
-$files["F4SE/Plugins/BodyMorphVR_source.zip"] = $srcZip
+$files["${C}F4SE/Plugins/BodyMorphVR_source.zip"] = $srcZip
 foreach ($k in $files.Keys) { [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($z, $files[$k], $k) }
 $z.Dispose()
 Get-Item $dll, $zip | Format-Table Name, Length

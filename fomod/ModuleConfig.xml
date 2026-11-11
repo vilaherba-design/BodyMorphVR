@@ -1,0 +1,51 @@
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>BodyMorph VR</moduleName>
+  <requiredInstallFiles>
+    <folder source="00 Core" destination="" priority="0"/>
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Before you start">
+      <optionalFileGroups order="Explicit">
+        <group name="Read this first" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="Requirements and one manual step">
+              <description>Needs Fallout 4 VR 1.2.72, F4SE VR and VR Address Library for F4SEVR.
+Nothing changes in the game until you build your body and outfits in BodySlide with "Build Morphs" ticked (preset "CBBE Zeroed Sliders" or any zeroed preset, then Batch Build): that writes the .tri files this mod deforms.
+For men, install BodyTalk 4 (Nude + clothing) and build it the same way. BodyTalk's flat-game hands (MaleHands.nif, 1stPersonMaleHands.nif, 1stPersonMaleBody.nif) make VR hands disappear: hide those three files in MO2.</description>
+              <files/>
+              <typeDescriptor><type name="Required"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="Bodies">
+      <optionalFileGroups order="Explicit">
+        <group name="BodyGen files (who gets which body)" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Silhouette bodies, more visible (x2)">
+              <description>The 41 female and 41 male bodies of Silhouette (ReidenXerx, GPL-3.0) with the female values doubled, plus its rules for named people (Piper, Cait, Curie...). Recommended.</description>
+              <files><folder source="10 Silhouette x2" destination="" priority="0"/></files>
+              <typeDescriptor><type name="Recommended"/></typeDescriptor>
+            </plugin>
+            <plugin name="Silhouette bodies, original values">
+              <description>Silhouette's own files, unchanged. Realistic and subtle: hard to notice in VR.</description>
+              <files><folder source="10 Silhouette x1" destination="" priority="0"/></files>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+            <plugin name="Simple example">
+              <description>Two example templates: every human woman gets either a big belly or a curvy body. To check that the mod works.</description>
+              <files><folder source="10 Example" destination="" priority="0"/></files>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+            <plugin name="None (I bring my own BodyGen files)">
+              <description>Installs no BodyGen files. Put your own *_templates.ini / *_morphs.ini in Data\F4SE\Plugins\F4EE\BodyGen\Loose\.</description>
+              <files/>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+</config>
