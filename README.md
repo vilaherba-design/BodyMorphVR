@@ -16,6 +16,12 @@ Escrito desde cero: no contiene ni se basa en código de LooksMenu.
 
 Licencia: GPL-3.0-or-later (ver LICENSE).
 
+## 0.6.1 (arreglo de un cierre del juego)
+
+La prueba de 0.5.0 cerró el juego en el driver de NVIDIA, 30 s después de pulsar F3 varias veces seguidas sobre la misma NPC: el plugin liberaba una malla clonada que ya estaba sustituida, pero el motor
+guarda copias del puntero del vertex buffer en sus "draw records" y siguen apuntando a ella hasta que reregistra la geometría. Ahora una malla que ha llegado a estar en pantalla en una actualización en vivo
+(Papyrus `UpdateMorphs`, F3/F4) **nunca se libera** (cuesta 0,1 a 0,7 MB cada una) y una actualización con los mismos valores no vuelve a construir nada. F3/F4 respetan `bFemaleOnly` (F3 eligió a Dogmeat).
+
 ## 0.6.0 (el motor de BodyGen: templates.ini / morphs.ini)
 
 Nuevo en 0.6.0: un NPC sin morphs guardados los recibe del generador la primera vez que el juego construye su cuerpo (el resultado se guarda por NPC, como en 0.5.0).

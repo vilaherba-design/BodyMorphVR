@@ -52,7 +52,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 6, 0, 0 };
+	constexpr REL::Version kVersion{ 0, 6, 1, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -530,7 +530,8 @@ namespace
 		std::chrono::steady_clock::time_point since;
 		int                                   logs = 0;
 		bool                                  keep = true;   // false (Papyrus updates): forgotten once the clone is on the geometry, which then owns it
-		std::uintptr_t                        replaced = 0;  // a clone of ours that this one takes the place of: released a while after the swap
+		std::uintptr_t                        replaced = 0;  // a clone of ours that this one takes the place of (retired: kept in memory, see Tick)
+		std::uint64_t                         weightsKey = 0;  // WeightsKey of the sliders the clone was built with
 	};
 
 	// ---- what the attach hook learned about each geometry: its ORIGINAL mesh and which .tri / shape morphs it, so that a later update (Papyrus UpdateMorphs)
@@ -541,7 +542,28 @@ namespace
 		std::uintptr_t clone = 0;  // our clone on the geometry now (0 = none)
 		std::string    tri;        // game-folder path of the garment .tri ("" = the global body .tri)
 		std::string    shape;      // shape name inside that .tri
+		std::uint64_t  weightsKey = 0;  // WeightsKey of the sliders behind the clone on the geometry (an update with the same sliders changes nothing)
 	};
+
+	// A key for a set of sliders (name, value), independent of their order: an update that would build the same clone again is skipped.
+	std::uint64_t WeightsKey(std::vector<bodymorph::MorphWeight> a_weights)
+	{
+		std::ranges::sort(a_weights, [](const auto& a, const auto& b) { return a.name < b.name; });
+		std::uint64_t key = 1469598103934665603ULL;  // FNV-1a
+		auto          mix = [&key](std::uint8_t b) { key = (key ^ b) * 1099511628211ULL; };
+		for (const auto& w : a_weights) {
+			for (const char c : w.name) {
+				mix(static_cast<std::uint8_t>(std::tolower(static_cast<unsigned char>(c))));
+			}
+			mix(0);
+			std::uint32_t bits = 0;
+			std::memcpy(&bits, &w.weight, sizeof(bits));
+			for (int i = 0; i < 4; ++i) {
+				mix(static_cast<std::uint8_t>(bits >> (8 * i)));
+			}
+		}
+		return key | 1;  // never 0 (0 = unknown)
+	}
 
 	std::mutex                                  g_geoMutex;
 	std::unordered_map<std::uintptr_t, GeoInfo> g_geo;
@@ -567,11 +589,12 @@ namespace
 		return true;
 	}
 
-	void SetGeoClone(const RE::BSGeometry* a_geo, std::uintptr_t a_clone)
+	void SetGeoClone(const RE::BSGeometry* a_geo, std::uintptr_t a_clone, std::uint64_t a_weightsKey = 0)
 	{
 		std::lock_guard lock(g_geoMutex);
 		if (const auto it = g_geo.find(reinterpret_cast<std::uintptr_t>(a_geo)); it != g_geo.end()) {
 			it->second.clone = a_clone;
+			it->second.weightsKey = a_clone ? a_weightsKey : 0;
 		}
 	}
 
@@ -843,8 +866,8 @@ namespace
 						it->state = JobState::Applied;
 						spdlog::info("  {}: upload finished (refCount {}), geometry now draws the morphed clone", it->name, st.refCount);
 						ScheduleScan(*it, "after apply", true);
-						SetGeoClone(it->geom.get(), it->newTri);
-						if (it->replaced) {  // the clone this one replaced is released a while from now, once no draw can still use it
+						SetGeoClone(it->geom.get(), it->newTri, it->weightsKey);
+						if (it->replaced) {  // the clone this one replaced is retired: kept in memory for good (see below)
 							Job old;
 							old.geom = it->geom;
 							old.name = it->name;
@@ -868,8 +891,21 @@ namespace
 					erase = true;
 				}
 			} else if (it->state == JobState::Retiring && now - it->since >= kRetireDelay) {
-				ReleaseClone(engine, *it);
-				spdlog::info("  {}: clone released", it->name);
+				if (it->keep) {  // the F7 lab path: its draw records were repointed by the scan, so the clone can go
+					ReleaseClone(engine, *it);
+					spdlog::info("  {}: clone released", it->name);
+				} else {
+					// A live update (Papyrus / F3): a clone that was ever on screen is NEVER released. The engine's draw records keep their own copy of the vertex
+					// buffer pointer and are only rebuilt when the engine re-registers the geometry, so a record made while this clone was on the geometry still
+					// points at it; freeing it crashed the game in the graphics driver (0.6.0 test: six F3 presses, the first replaced clone released 30 s later).
+					// The price is the clone's memory (about 0.1 to 0.7 MB each); an update that would build the same clone again is skipped (WeightsKey).
+					static std::atomic<int> s_kept{ 0 };
+					const int               n = s_kept.fetch_add(1) + 1;
+					if (n <= 20 || n % 100 == 0) {
+						spdlog::info("  {}: retired clone kept in memory (not released: a draw record may still point at it); {} kept so far", it->name, n);
+					}
+					it->newTri = 0;
+				}
 				erase = true;
 			}
 			it = erase ? g_jobs.erase(it) : it + 1;
@@ -1916,7 +1952,7 @@ namespace
 		if (!Peek(a_geo, 0x188, now) || now != cr.oldTri || !WritePointer(a_geo, 0x188, cr.newTri)) {
 			return std::format("the mesh changed under us ({:#x} instead of {:#x}), clone unused", now, cr.oldTri);
 		}
-		SetGeoClone(a_geo, cr.newTri);
+		SetGeoClone(a_geo, cr.newTri, WeightsKey(a_weights));
 		const int total = ++g_autoShapes;
 		if (total % 25 == 0) {
 			spdlog::info("[auto] {} meshes morphed so far", total);
@@ -2050,6 +2086,7 @@ namespace
 		job.desc = cr.desc;
 		job.since = std::chrono::steady_clock::now();
 		job.keep = false;
+		job.weightsKey = WeightsKey(a_weights);
 		job.replaced = (a_info.clone != 0 && cr.oldTri == a_info.clone) ? a_info.clone : 0;
 		g_jobs.push_back(std::move(job));
 		return true;
@@ -2127,7 +2164,8 @@ namespace
 		const auto  pick = PickWeights(*cfg, actor, female, false);
 		std::vector<RE::BSGeometry*> geoms;
 		CollectGeometries(root, 0, geoms);
-		int queued = 0, restored = 0, unknown = 0, noEffect = 0;
+		const auto weightsKey = pick.weights.empty() ? std::uint64_t{ 0 } : WeightsKey(pick.weights);
+		int        queued = 0, restored = 0, unknown = 0, noEffect = 0, unchanged = 0;
 		for (auto* geo : geoms) {
 			std::uintptr_t current = 0;
 			GeoInfo        info;
@@ -2142,6 +2180,10 @@ namespace
 					RestoreToOriginal(engine, geo, info, name);
 					++restored;
 				}
+				continue;
+			}
+			if (morphedNow && info.weightsKey == weightsKey) {  // the clone on screen already has exactly these sliders
+				++unchanged;
 				continue;
 			}
 			std::shared_ptr<const bodymorph::TriFile> garment;
@@ -2167,8 +2209,8 @@ namespace
 			}
 		}
 		if (logIt || queued || restored) {
-			spdlog::info("[update] actor {:08X} ({}): {} sliders ({}); {} clone(s) queued, {} put back to the original, {} unaffected, {} geometries not recorded", a_formID,
-				female ? "female" : "male", pick.weights.size(), pick.source, queued, restored, noEffect, unknown);
+			spdlog::info("[update] actor {:08X} ({}): {} sliders ({}); {} clone(s) queued, {} put back to the original, {} already up to date, {} unaffected, {} geometries not recorded", a_formID,
+				female ? "female" : "male", pick.weights.size(), pick.source, queued, restored, unchanged, noEffect, unknown);
 		}
 		RefreshActive();
 	}
@@ -2286,9 +2328,9 @@ namespace
 	{
 		RefreshAutoSettings();
 		float dist = 0.0F;
-		auto* actor = NearestActor(g_maxDistance, false, dist);
+		auto* actor = NearestActor(g_maxDistance, g_femaleOnly, dist);  // bFemaleOnly: the nearest dog is not a test subject
 		if (!actor) {
-			spdlog::warn("[test] no NPC within {:.0f} units", g_maxDistance);
+			spdlog::warn("[test] no {}NPC within {:.0f} units", g_femaleOnly ? "female " : "", g_maxDistance);
 			return;
 		}
 		const auto* npc = actor->GetNPC();
@@ -2306,9 +2348,9 @@ namespace
 	void StoreTestClear()
 	{
 		float dist = 0.0F;
-		auto* actor = NearestActor(g_maxDistance, false, dist);
+		auto* actor = NearestActor(g_maxDistance, g_femaleOnly, dist);
 		if (!actor) {
-			spdlog::warn("[test] no NPC within {:.0f} units", g_maxDistance);
+			spdlog::warn("[test] no {}NPC within {:.0f} units", g_femaleOnly ? "female " : "", g_maxDistance);
 			return;
 		}
 		g_store.RemoveActor(actor->GetFormID());
@@ -2605,7 +2647,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00060000;
+	a_info->version = 0x00060100;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}
