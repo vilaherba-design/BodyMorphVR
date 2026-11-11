@@ -23,7 +23,7 @@ if ($LASTEXITCODE) { throw "configure failed" }
 cmake --build "$W\build" --config Release -- /m /v:m
 if ($LASTEXITCODE) { throw "build failed" }
 $dll = "$W\build\Release\BodyMorphVR.dll"
-$zip = Join-Path $Out "BodyMorphVR-0.5.0-bodygen.zip"
+$zip = Join-Path $Out "BodyMorphVR-0.6.0-bodygen.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $z = [System.IO.Compression.ZipFile]::Open($zip, "Create")
@@ -35,11 +35,13 @@ $files = @{
   "F4SE/Plugins/BodyMorphVR_README.txt" = "$W\README.md"
   "Scripts/BodyGen.pex" = "$W\data\Scripts\BodyGen.pex"
   "Source/Scripts/BodyGen.psc" = "$W\data\Source\Scripts\BodyGen.psc"
+  "F4SE/Plugins/BodyMorphVR_examples/BodyGen/Loose/BodyMorphVR_example_templates.ini" = "$W\examples\BodyGen\Loose\BodyMorphVR_example_templates.ini"
+  "F4SE/Plugins/BodyMorphVR_examples/BodyGen/Loose/BodyMorphVR_example_morphs.ini" = "$W\examples\BodyGen\Loose\BodyMorphVR_example_morphs.ini"
 }
 # GPL: the port's own source goes inside the mod as a nested zip
 $srcZip = Join-Path $W "BodyMorphVR_source.zip"
 $sz = [System.IO.Compression.ZipFile]::Open($srcZip, "Create")
-foreach ($f in @("CMakeLists.txt", "vcpkg.json", "build.ps1", "README.md", "LICENSE", "src/main.cpp", "src/pch.h", "src/TriFile.h", "src/TriFile.cpp", "src/MorphApply.h", "src/MorphList.h", "src/MorphStore.h", "src/IniFile.h", "src/TriPath.h", "src/HolderScan.h", "data/BodyMorphVR.ini", "data/Scripts/BodyGen.pex", "data/Source/Scripts/BodyGen.psc", "tools/make_bodygen_pex.py", "tests/run.sh", "tests/tri_test.cpp")) {
+foreach ($f in @("CMakeLists.txt", "vcpkg.json", "build.ps1", "README.md", "LICENSE", "src/main.cpp", "src/pch.h", "src/TriFile.h", "src/TriFile.cpp", "src/MorphApply.h", "src/MorphList.h", "src/MorphStore.h", "src/BodyGenIni.h", "src/IniFile.h", "src/TriPath.h", "src/HolderScan.h", "data/BodyMorphVR.ini", "data/Scripts/BodyGen.pex", "data/Source/Scripts/BodyGen.psc", "tools/make_bodygen_pex.py", "examples/BodyGen/Loose/BodyMorphVR_example_templates.ini", "examples/BodyGen/Loose/BodyMorphVR_example_morphs.ini", "tests/run.sh", "tests/tri_test.cpp")) {
   [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($sz, (Join-Path $W $f), "BodyMorphVR/$f")
 }
 $sz.Dispose()

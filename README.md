@@ -7,6 +7,7 @@ Escrito desde cero: no contiene ni se basa en código de LooksMenu.
 - `src/TriFile.*`: lector `.tri` (formato tal como lo lee BodySlide, GPL-3.0, ousnius / Caliente).
 - `src/TriPath.h`: valor de la etiqueta `BODYTRI` -> ruta del `.tri` de cada prenda.
 - `src/MorphList.h`: lista "slider:peso" del INI y sufijo `:N` de los nombres de shape.
+- `src/BodyGenIni.h`: el motor de `templates.ini` / `morphs.ini` (análisis, qué línea decide para un NPC, tirada aleatoria), sin tipos del juego y con tests.
 - `src/MorphStore.h`: tabla de morphs por NPC (la que escriben las funciones Papyrus `BodyGen.*`) y su serialización para el co-save de F4SE.
 - `data/Scripts/BodyGen.pex` (+ `data/Source/Scripts/BodyGen.psc`): script Papyrus con las 12 funciones nativas `BodyGen.*` (las firmas que llaman los scripts de Silhouette); `tools/make_bodygen_pex.py` lo regenera.
 - `src/MorphApply.h`: aplicación de morphs sobre una copia del bloque de vértices (half / float).
@@ -14,6 +15,19 @@ Escrito desde cero: no contiene ni se basa en código de LooksMenu.
 - Compilación: CommonLibF4VR (ArthurHub @ 9057052) en `lib/CommonLibF4VR`, VS 2022, vcpkg.
 
 Licencia: GPL-3.0-or-later (ver LICENSE).
+
+## 0.6.0 (el motor de BodyGen: templates.ini / morphs.ini)
+
+Nuevo en 0.6.0: un NPC sin morphs guardados los recibe del generador la primera vez que el juego construye su cuerpo (el resultado se guarda por NPC, como en 0.5.0).
+- Lee `Data\F4SE\Plugins\F4EE\BodyGen\<Plugin.esp>\templates.ini` y `morphs.ini` de los plugins cargados (en orden de carga) y `Loose\*_templates.ini` / `*_morphs.ini` (orden de bytes).
+  Es el mismo sitio y la misma gramática que usa BodyGen de LooksMenu, así que los archivos de Silhouette valen tal cual. Se leen una vez al arrancar el juego.
+- Gramática: `Nombre = morph@bajo:alto , morph@valor / otro conjunto` (`/` conjuntos alternativos, `,` morphs que se aplican juntos, `|` morphs alternativos, `:` valor aleatorio entre dos números) y
+  `All|Gender|Race`, `Plugin.esp|All|Gender|Race`, `Plugin.esp|FormID|Gender` `= plantilla|plantilla , plantilla`. Gana la última línea que encaja; las líneas `All` y de plugin solo listan NPCs sin plantilla
+  (se sigue la cadena de plantillas del NPC); un FormID puede ser una lista nivelada. La raza se compara por su editor id (`HumanRace`).
+- `RegenerateMorphs(actor, update)` vacía la tabla del NPC y vuelve a tirar; un NPC que ya tiene morphs de otro mod (p. ej. AAF) no recibe los de BodyGen, igual que en LooksMenu.
+- INI nuevo `[BodyGen]`: `bEnable`, `sFolder`, `iLogActors` (líneas `[bodygen]` en el log: actor, cadena de plantillas, línea que decidió, morphs), `iSeed`.
+- Ejemplo para probar: `BodyMorphVR_examples\BodyGen\Loose\` (cópialo a `Data\F4SE\Plugins\F4EE\BodyGen\Loose\`): cada mujer humana recibe una barriga aleatoria o más trasero y pecho.
+- Comprobación de IDs de la address library antes de usar funciones del juego nuevas: si falta alguno, esa función se apaga con un aviso en el log en vez de cerrar el juego.
 
 ## 0.5.0 (BodyGen: morphs guardados por NPC)
 
@@ -24,7 +38,7 @@ Nuevo en 0.5.0:
 - `UpdateMorphs` (y `RegenerateMorphs(actor, True)`) rehacen el cuerpo de un NPC que ya está en pantalla, partiendo siempre de la malla original.
 - Teclas de prueba: F3 guarda `sStoreMorphs` ([Test] del INI) para el NPC más cercano y lo actualiza; F4 lo vacía.
 - Sin morphs guardados, un NPC conserva su cuerpo (salvo `bUseGlobalSliders=1`, el comportamiento de prueba anterior).
-- Aún no incluye el generador de BodyGen (`templates.ini` / `morphs.ini`): `RegenerateMorphs` solo vacía la tabla.
+- El generador de BodyGen (`templates.ini` / `morphs.ini`) llegó en 0.6.0.
 
 ## Prototipo 0.4.0 (la ropa sigue al cuerpo)
 

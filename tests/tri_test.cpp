@@ -1,4 +1,5 @@
 // BodyMorph VR unit tests (no game): TRI reader and CPU morph application. GPL-3.0-or-later.
+#include "../src/BodyGenIni.h"
 #include "../src/IniFile.h"
 #include "../src/MorphApply.h"
 #include "../src/MorphList.h"
@@ -9,6 +10,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -280,6 +283,176 @@ int main()
 		CHECK(!st.Has(0x14, false));
 		st.Clear();
 		CHECK(st.TableCount() == 0);
+	}
+
+	// --- BodyGen ini engine (templates.ini / morphs.ini)
+	{
+		namespace gi = bodymorph::genini;
+		gi::Db                   db;
+		std::vector<std::string> problems;
+		db.AddTemplates(
+			"# a comment\r\n"
+			"Slim = Breasts@-0.5:0.2, Waist@-1\r\n"
+			"Pick = A@1 / B@2 , C@3|D@4\r\n"
+			"Zero = Nothing@0\r\n"
+			"NoAt = Breasts 0.5\r\n"
+			"NoValue = Breasts@\r\n"
+			"= Breasts@1\r\n"
+			"Slim = Hips@1.5\r\n"  // a later definition replaces the earlier one
+			"Big = Breasts@1:2 ,  Hips @ 3\r\n"
+			"Twice = X@1=ignored\r\n"
+			"Neg = M@-0.5:-0.1\r\n"
+			"Swap = M@2:1\r\n",
+			"templates.ini", &problems);
+		CHECK(db.GetStats().templates == 7);  // Slim, Pick, Zero, Big, Twice, Neg, Swap
+		CHECK(db.GetStats().malformedTemplates == 3);
+		CHECK(db.HasTemplate("slim") && db.HasTemplate("BIG") && !db.HasTemplate("NoAt"));
+		CHECK(problems.size() == 3);
+
+		db.AddRules(
+			"All|Female|HumanRace = Slim|Big\r\n"
+			"All|Male|HumanRace = Big\r\n"
+			"All||GhoulRace = Pick\r\n"
+			"Mod.esp|All|Female|HumanRace = Big , Zero\r\n"
+			"Mod.esp|1A2B|Female = Slim\r\n"
+			"Mod.esp|0xFF = Missing\r\n"
+			"Broken line\r\n"
+			"Mod.esp|nothex|Female = Slim\r\n"
+			"Gone.esp|All|HumanRace = Slim\r\n"
+			"Allied.esp|Male|HumanRace = Big\r\n"  // a plugin name that starts with "all" is read as All
+			"All|Female|GhoulRace = slim|Nope\r\n",
+			"morphs.ini", &problems);
+		CHECK(db.GetStats().rules == 9 && db.GetStats().malformedRules == 2);
+		const auto& rules = db.Rules();
+		CHECK(rules[0].kind == gi::Rule::Kind::kAll && rules[0].sex == 1 && rules[0].race == "HumanRace" && rules[0].groups.size() == 1 && rules[0].groups[0].alts.size() == 2);
+		CHECK(rules[2].kind == gi::Rule::Kind::kAll && rules[2].sex == -1 && rules[2].race == "GhoulRace");
+		CHECK(rules[3].kind == gi::Rule::Kind::kPlugin && rules[3].plugin == "Mod.esp" && rules[3].groups.size() == 2);
+		CHECK(rules[4].kind == gi::Rule::Kind::kForm && rules[4].localForm == 0x1A2B && rules[4].sex == 1);
+		CHECK(rules[5].kind == gi::Rule::Kind::kForm && rules[5].localForm == 0xFF && rules[5].sex == -1);
+		CHECK(rules[7].kind == gi::Rule::Kind::kAll && rules[7].sex == 0 && rules[7].race == "HumanRace");
+
+		gi::Resolver res;
+		res.pluginIndex = [](const std::string& p) { return p == "Mod.esp" ? 0x05 : p == "Gone.esp" ? -1 : 0x00; };
+		res.forms = [](const std::string&, std::uint32_t local, std::vector<std::uint32_t>& out) {
+			if (local == 0x1A2B) {  // a leveled list: itself and what it produces
+				out.push_back(0x05001A2B);
+				out.push_back(0x05001A2C);
+			}
+		};
+		problems.clear();
+		db.Finalize(res, &problems);
+		CHECK(db.GetStats().validRules == 7);  // not valid: the Gone.esp line and the 0xFF form
+		CHECK(db.GetStats().missingTemplates == 1);  // "Nope"
+		CHECK(!problems.empty());
+
+		// which line decides for an NPC: the LAST matching one; All / plugin lines list only NPCs without a template; forms and leveled lists by id
+		const std::string human = "HumanRace";
+		const std::string ghoul = "ghoulrace";  // editor ids are compared without case
+		auto              npc = [](std::uint32_t id, const std::string& race, bool templ = false, bool isNpc = true) {
+            gi::NpcInfo n;
+            n.formID = id;
+            n.race = race;
+            n.hasTemplate = templ;
+            n.isNpc = isNpc;
+            return n;
+		};
+		CHECK(db.Match(npc(0x00001234, human), true) == &rules[0]);
+		CHECK(db.Match(npc(0x05000777, human), true) == &rules[3]);                // defined by Mod.esp (load-order byte 05)
+		CHECK(db.Match(npc(0x05001A2C, human), true) == &rules[4]);                // named through the leveled list, beats the plugin line
+		CHECK(db.Match(npc(0x05001A2C, human), false) == &rules[7]);               // the male table: the later male All line wins
+		CHECK(db.Match(npc(0x00001234, ghoul), true) == &rules[8]);
+		CHECK(db.Match(npc(0x00001234, ghoul), false) == &rules[2]);               // no gender written: both tables
+		CHECK(db.Match(npc(0x00001234, ""), true) == &rules[8]);                   // an NPC with no race matches any race filter
+		CHECK(db.Match(npc(0x00001234, "SuperMutantRace"), true) == nullptr);      // some other race: no line
+		CHECK(db.Match(npc(0x00001234, human, true), true) == nullptr);            // has a template: All lines do not list it ...
+		CHECK(db.MatchChain({ npc(0x00001234, human, true), npc(0x00005678, human) }, true) == &rules[0]);  // ... but its template chain finds the root
+		CHECK(db.MatchChain({ npc(0x05009999, human, true), npc(0x05001A2B, "", false, false) }, true) == &rules[4]);  // a leveled list on the chain: only FormID lines name it
+		CHECK(db.MatchChain({ npc(0x05009999, human, true), npc(0x05001A2B, "", false, false) }, false) == nullptr);
+
+		// rolling
+		std::mt19937 rng(12345);
+		int          slim = 0, big = 0;
+		float        minB = 99, maxB = -99;
+		for (int i = 0; i < 2000; ++i) {
+			const auto out = db.Roll(rules[0], rng);  // Slim | Big
+			if (out.size() == 1 && out[0].first == "Hips" && Near(out[0].second, 1.5F)) {
+				++slim;
+			} else if (out.size() == 2 && out[0].first == "Breasts" && out[1].first == "Hips" && Near(out[1].second, 3.0F)) {
+				++big;
+				minB = std::min(minB, out[0].second);
+				maxB = std::max(maxB, out[0].second);
+			} else {
+				CHECK(false);
+			}
+		}
+		CHECK(slim > 800 && big > 800 && slim + big == 2000);  // about half each
+		CHECK(minB >= 1.0F && maxB <= 2.0F && maxB - minB > 0.9F);  // a uniform range
+		{
+			const auto out = db.Roll(rules[3], rng);  // Big , Zero: the zero template adds nothing
+			CHECK(out.size() == 2);
+		}
+		std::map<std::string, int> seen;  // A / B,C|D
+		for (int i = 0; i < 1000; ++i) {
+			std::string key;
+			for (const auto& m : db.Roll(rules[2], rng)) {
+				key += m.first;
+			}
+			++seen[key];
+		}
+		CHECK(seen.size() == 3 && seen["A"] > 300 && seen["BC"] > 100 && seen["BD"] > 100);
+		{  // negative and reversed ranges, same seed = same roll
+			gi::Db d2;
+			d2.AddTemplates("Neg = M@-0.5:-0.1\r\nSwap = M@2:1\r\nZero = Z@0\r\nDup = X@1, x@2\r\n", "t");
+			d2.AddRules("All|Female|HumanRace = Neg\r\nAll|Male|HumanRace = Swap\r\nAll|Female|GhoulRace = Zero\r\nAll||HumanRace = Dup\r\n", "m");
+			gi::Resolver r2;
+			r2.pluginIndex = [](const std::string&) { return 0; };
+			d2.Finalize(r2);
+			CHECK(d2.GetStats().validRules == 4);
+			std::mt19937 a(7), b(7);
+			for (int i = 0; i < 200; ++i) {
+				const auto n = d2.Roll(d2.Rules()[0], a);
+				CHECK(n.size() == 1 && n[0].second >= -0.5F && n[0].second <= -0.1F);
+				const auto sw = d2.Roll(d2.Rules()[1], a);
+				CHECK(sw.size() == 1 && sw[0].second >= 1.0F && sw[0].second <= 2.0F);
+				CHECK(d2.Roll(d2.Rules()[2], a).empty());  // a template that only rolls 0 leaves nothing
+			}
+			a.seed(7);
+			CHECK(d2.Roll(d2.Rules()[0], a) == d2.Roll(d2.Rules()[0], b));
+			const auto dup = d2.Roll(d2.Rules()[3], a);  // the same morph name twice (case-insensitive): the later value wins
+			CHECK(dup.size() == 1 && Near(dup[0].second, 2.0F));
+		}
+		// a line whose templates are all missing still overwrites an earlier line, with nothing
+		{
+			gi::Db d3;
+			d3.AddTemplates("T = A@1\r\n", "t");
+			d3.AddRules("All|Female|HumanRace = T\r\nAll|Female|HumanRace = Nope\r\n", "m");
+			gi::Resolver r3;
+			r3.pluginIndex = [](const std::string&) { return 0; };
+			d3.Finalize(r3);
+			const auto* m = d3.Match(npc(0x10, "HumanRace"), true);
+			CHECK(m == &d3.Rules()[1] && m->groups.empty());
+			std::mt19937 g(1);
+			CHECK(d3.Roll(*m, g).empty());
+		}
+		// garbage never crashes
+		{
+			gi::Db d4;
+			std::string            junk;
+			const std::string_view alphabet = "=|,/@:#\r\n aZ09-.";
+			for (int i = 0; i < 4000; ++i) {
+				junk.push_back(alphabet[static_cast<std::size_t>(i * 7 + i / 5) % alphabet.size()]);
+			}
+			d4.AddTemplates(junk, "j");
+			d4.AddRules(junk, "j");
+			gi::Resolver r4;
+			r4.pluginIndex = [](const std::string&) { return 0; };
+			r4.forms = [](const std::string&, std::uint32_t, std::vector<std::uint32_t>& o) { o.push_back(1); };
+			d4.Finalize(r4);
+			std::mt19937 g(2);
+			for (const auto& r : d4.Rules()) {
+				(void)d4.Roll(r, g);
+			}
+		}
 	}
 
 	std::printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);

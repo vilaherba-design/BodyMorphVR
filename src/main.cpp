@@ -1,7 +1,7 @@
 // BodyMorph VR: BodySlide body morphs for Fallout 4 VR NPCs, written from scratch (no LooksMenu code).
 // Copyright (C) 2026 Axel. Licensed under the GNU General Public License version 3 or later: see LICENSE.
 //
-// 0.5.0: BodyGen (a per-NPC morph store behind the Papyrus BodyGen natives, saved in the F4SE co-save) on top of 0.4.0 (auto-apply at attach; each garment is morphed with the .tri its BODYTRI names). Keys (INI): F8 = read-only probe (logs the geometry of the nearest NPCs),
+// 0.6.0: the BodyGen ini engine (templates.ini / morphs.ini roll the morphs of an NPC that has none). 0.5.0: BodyGen (a per-NPC morph store behind the Papyrus BodyGen natives, saved in the F4SE co-save) on top of 0.4.0 (auto-apply at attach; each garment is morphed with the .tri its BODYTRI names). Keys (INI): F8 = read-only probe (logs the geometry of the nearest NPCs),
 //   F7  = clone the body mesh of the nearest NPC and apply the sliders from sMorphs (read from the BodySlide .tri),
 //   F6  = put the original meshes back.  (F5/F9 are the game's quick save/load: do not use them.)
 // How a morph reaches the screen (VR layout and engine functions verified in the 1.2.72 exe, see tools/ and the findings):
@@ -13,6 +13,7 @@
 // Restore points the geometry back at the untouched original and releases the clone after a delay.
 // Threads: [poll thread] reads the keys, [main] (F4SE task) does everything else; every game pointer read goes through SEH.
 
+#include "BodyGenIni.h"
 #include "HolderScan.h"
 #include "IniFile.h"
 #include "MorphApply.h"
@@ -27,14 +28,17 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -48,7 +52,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 5, 0, 0 };
+	constexpr REL::Version kVersion{ 0, 6, 0, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -1402,6 +1406,442 @@ namespace
 		return {};
 	}
 
+	// ---- the VR address library (a CSV: header row "id,offset", then one "id,hexoffset" row per id). CommonLibF4VR ends the game when it needs an id that is not in
+	// it, so every feature that reaches the game through ids this plugin has not used before checks them first and switches itself off, with a logged reason.
+	const std::unordered_set<std::uint64_t>* AddressIds()
+	{
+		static std::unordered_set<std::uint64_t> ids;
+		static bool                              ok = false;
+		static std::once_flag                    once;
+		std::call_once(once, [] {
+			const auto    path = std::format("Data/F4SE/Plugins/version-{}.csv", REL::Module::get().version().string("-"));
+			std::ifstream file(path);
+			if (!file) {
+				spdlog::error("[ids] cannot read the VR address library '{}'", path);
+				return;
+			}
+			std::string line;
+			std::getline(file, line);  // header row
+			while (std::getline(file, line)) {
+				std::uint64_t id = 0;
+				if (std::from_chars(line.data(), line.data() + line.size(), id).ec == std::errc{}) {
+					ids.insert(id);
+				}
+			}
+			ok = true;
+			spdlog::info("[ids] VR address library: {} ids read", ids.size());
+		});
+		return ok ? &ids : nullptr;
+	}
+
+	bool HaveIds(std::initializer_list<std::uint64_t> a_ids, const char* a_what)
+	{
+		const auto* ids = AddressIds();
+		if (!ids) {
+			spdlog::error("[ids] {} switched off: the address library could not be read", a_what);
+			return false;
+		}
+		std::string missing;
+		for (const auto id : a_ids) {
+			if (!ids->contains(id)) {
+				missing += std::format(" {}", id);
+			}
+		}
+		if (!missing.empty()) {
+			spdlog::error("[ids] {} switched off: the VR address library lacks the id(s){}", a_what, missing);
+			return false;
+		}
+		return true;
+	}
+
+	// [any thread] A form by its id, or null. (Needs the two global form-map ids; without them it logs once and returns null instead of ending the game.)
+	RE::TESForm* FormById(std::uint32_t a_id)
+	{
+		static const bool ok = HaveIds({ 422985, 691815 }, "lookup of forms by id");
+		return ok ? RE::TESForm::GetFormByID(a_id) : nullptr;
+	}
+
+	template <class T>
+	T* FormById(std::uint32_t a_id)
+	{
+		auto* form = FormById(a_id);
+		return form ? form->As<T>() : nullptr;
+	}
+
+	// =====================================================================================================================
+	// BodyGen ini engine, game side. Reads F4SE\Plugins\F4EE\BodyGen\<Plugin.esp>\{templates,morphs}.ini and Loose\*_{templates,morphs}.ini (the place and the file
+	// grammar LooksMenu's BodyGen uses, so Silhouette's files work unchanged), and rolls the morphs of an actor that has none: the actor's template chain, race and
+	// sex pick the line, the line's templates give random values, they are written to the store (what the Papyrus functions write too).
+	// The parsing, matching and rolling are in BodyGenIni.h (unit-tested without the game); this part only reads game data, through SEH-guarded reads.
+	// =====================================================================================================================
+	namespace autogen
+	{
+		namespace gi = bodymorph::genini;
+
+		struct RawForm
+		{
+			std::uint32_t formID = 0;
+			std::uint8_t  type = 0;
+		};
+		struct RawNpc
+		{
+			std::uint32_t  formID = 0;
+			std::uintptr_t tmpl = 0;  // TESActorBaseData::baseTemplateForm
+			std::uintptr_t race = 0;  // TESRaceForm::formRace
+		};
+
+		constexpr auto kTypeNpc = static_cast<std::uint8_t>(RE::ENUM_FORM_ID::kNPC_);
+		constexpr auto kTypeLeveled = static_cast<std::uint8_t>(RE::ENUM_FORM_ID::kLVLN);
+		constexpr auto kTypeRace = static_cast<std::uint8_t>(RE::ENUM_FORM_ID::kRACE);
+
+		// ---- SEH-guarded reads (no C++ objects with destructors in these)
+		bool ReadForm(const RE::TESForm* a_form, RawForm& a_out)
+		{
+			__try {
+				a_out.formID = a_form->GetFormID();
+				a_out.type = static_cast<std::uint8_t>(a_form->GetFormType());
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		bool ReadNpc(const RE::TESNPC* a_npc, RawNpc& a_out)
+		{
+			__try {
+				a_out.formID = a_npc->GetFormID();
+				a_out.tmpl = reinterpret_cast<std::uintptr_t>(a_npc->baseTemplateForm);
+				a_out.race = reinterpret_cast<std::uintptr_t>(a_npc->GetFormRace());
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		bool ReadEditorId(const RE::TESForm* a_form, char* a_buf, int a_size)
+		{
+			__try {
+				const char* id = a_form->GetFormEditorID();
+				int         i = 0;
+				for (; id && i < a_size - 1 && id[i]; ++i) {
+					a_buf[i] = id[i];
+				}
+				a_buf[i] = 0;
+				return true;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return false;
+			}
+		}
+
+		int ReadLeveled(const RE::TESLevCharacter* a_list, const RE::TESForm** a_out, int a_max)
+		{
+			__try {
+				const int   count = a_list->baseListCount;
+				const auto* entries = a_list->leveledLists;
+				int         n = 0;
+				for (int i = 0; entries && i < count && n < a_max; ++i) {
+					if (entries[i].form) {
+						a_out[n++] = entries[i].form;
+					}
+				}
+				return n;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return 0;
+			}
+		}
+
+		int PluginIndex(const char* a_name)
+		{
+			__try {
+				auto* handler = RE::TESDataHandler::GetSingleton();
+				if (!handler) {
+					return -1;
+				}
+				const auto* file = handler->LookupLoadedModByName(a_name);
+				return file ? static_cast<int>(file->compileIndex) : -1;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return -1;
+			}
+		}
+
+		const RE::TESForm* LookupIn(const char* a_plugin, std::uint32_t a_localId)
+		{
+			__try {
+				auto* handler = RE::TESDataHandler::GetSingleton();
+				return handler ? handler->LookupForm(a_localId, a_plugin) : nullptr;
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				return nullptr;
+			}
+		}
+
+		// The form itself and, for a leveled list, everything it can produce.
+		void ExpandForm(const RE::TESForm* a_form, std::vector<std::uint32_t>& a_out, int a_depth)
+		{
+			RawForm raw;
+			if (!a_form || a_depth > 6 || !ReadForm(a_form, raw) || std::find(a_out.begin(), a_out.end(), raw.formID) != a_out.end()) {
+				return;
+			}
+			a_out.push_back(raw.formID);
+			if (raw.type == kTypeLeveled) {
+				const RE::TESForm* entries[96];
+				const int          n = ReadLeveled(static_cast<const RE::TESLevCharacter*>(a_form), entries, 96);
+				for (int i = 0; i < n; ++i) {
+					ExpandForm(entries[i], a_out, a_depth + 1);
+				}
+			}
+		}
+
+		// The editor id of a race. HumanRace is known by its form id (Fallout4.esm 013746); any other race is asked for its editor id.
+		std::string RaceName(std::uintptr_t a_race)
+		{
+			if (!a_race) {
+				return {};
+			}
+			RawForm raw;
+			if (!ReadForm(reinterpret_cast<const RE::TESForm*>(a_race), raw) || raw.type != kTypeRace) {
+				return "?";
+			}
+			if (raw.formID == 0x00013746) {
+				return "HumanRace";
+			}
+			char buf[128]{};
+			if (ReadEditorId(reinterpret_cast<const RE::TESForm*>(a_race), buf, sizeof(buf)) && buf[0]) {
+				return buf;
+			}
+			return std::format("?{:08X}", raw.formID);
+		}
+
+		// The actor's base NPC and the NPCs it is templated from (a leveled list ends the chain).
+		std::vector<gi::NpcInfo> BuildChain(const RE::TESNPC* a_npc)
+		{
+			std::vector<gi::NpcInfo> chain;
+			const RE::TESForm*       cur = a_npc;
+			for (int depth = 0; depth < 8 && cur; ++depth) {
+				RawForm form;
+				if (!ReadForm(cur, form)) {
+					break;
+				}
+				if (form.type == kTypeLeveled) {
+					gi::NpcInfo level;
+					level.formID = form.formID;
+					level.isNpc = false;
+					chain.push_back(std::move(level));
+					break;
+				}
+				if (form.type != kTypeNpc) {
+					break;
+				}
+				RawNpc raw;
+				if (!ReadNpc(static_cast<const RE::TESNPC*>(cur), raw)) {
+					break;
+				}
+				gi::NpcInfo info;
+				info.formID = raw.formID;
+				info.hasTemplate = raw.tmpl != 0;
+				info.race = RaceName(raw.race);
+				chain.push_back(std::move(info));
+				cur = reinterpret_cast<const RE::TESForm*>(raw.tmpl);
+			}
+			return chain;
+		}
+
+		// ---- state
+		struct State
+		{
+			std::mutex                        mutex;  // the rng, the tried set and the log counter
+			gi::Db                            db;     // read-only after Load
+			std::mt19937                      rng;
+			std::unordered_set<std::uint32_t> tried;  // actors rolled this session (a roll that gave nothing is not repeated for every garment of the same actor)
+			std::atomic<bool>                 ready{ false };
+			int                               logLimit = 60;
+			int                               logged = 0;
+		};
+		State g_gen;
+
+		bool ReadWhole(const std::filesystem::path& a_path, std::string& a_out)
+		{
+			std::ifstream file(a_path, std::ios::binary);
+			if (!file) {
+				return false;
+			}
+			a_out.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+			return true;
+		}
+
+		void Load()
+		{
+			namespace fs = std::filesystem;
+			const auto ini = ReadIni();
+			if (ini.GetInt("BodyGen", "bEnable", 1) == 0) {
+				spdlog::info("[bodygen] switched off by the INI (bEnable=0)");
+				return;
+			}
+			const std::string folder = ini.GetString("BodyGen", "sFolder", "Data\\F4SE\\Plugins\\F4EE\\BodyGen");
+			g_gen.logLimit = std::clamp(ini.GetInt("BodyGen", "iLogActors", 60), 0, 5000);
+			const int seed = ini.GetInt("BodyGen", "iSeed", 0);
+			g_gen.rng.seed(seed ? static_cast<std::uint32_t>(seed) : std::random_device{}());
+			if (!HaveIds({ 711558 }, "BodyGen (plugin list)") || !AddressIds() || !FormById(0x14)) {
+				return;  // (FormById logs by itself when its ids are missing)
+			}
+
+			std::error_code ec;
+			if (!fs::is_directory(folder, ec)) {
+				spdlog::info("[bodygen] no folder '{}': nothing to generate from (Silhouette or any BodyGen mod puts its templates.ini / morphs.ini there)", folder);
+				return;
+			}
+			struct PluginDir
+			{
+				int         index;
+				std::string name;
+				fs::path    path;
+			};
+			std::vector<PluginDir>   dirs;
+			std::vector<std::string> looseTemplates, looseMorphs;
+			fs::path                 loose;
+			int                      notLoaded = 0;
+			for (const auto& entry : fs::directory_iterator(folder, ec)) {
+				std::error_code ec2;
+				if (!entry.is_directory(ec2)) {
+					continue;
+				}
+				const auto name = entry.path().filename().string();
+				if (gi::EqualsNoCase(name, "Loose")) {
+					loose = entry.path();
+					for (const auto& f : fs::directory_iterator(entry.path(), ec2)) {
+						const auto file = f.path().filename().string();
+						const auto low = gi::Lower(file);
+						if (low.ends_with("_templates.ini")) {
+							looseTemplates.push_back(file);
+						} else if (low.ends_with("_morphs.ini")) {
+							looseMorphs.push_back(file);
+						}
+					}
+					continue;
+				}
+				const int index = PluginIndex(name.c_str());
+				if (index < 0) {
+					++notLoaded;
+					continue;
+				}
+				dirs.push_back({ index, name, entry.path() });
+			}
+			std::sort(dirs.begin(), dirs.end(), [](const PluginDir& a, const PluginDir& b) { return a.index < b.index; });  // load order
+			std::sort(looseTemplates.begin(), looseTemplates.end());                                                     // plain byte order, like LooksMenu
+			std::sort(looseMorphs.begin(), looseMorphs.end());
+
+			std::vector<std::string> problems;
+			int                      files = 0;
+			auto                     add = [&](bool a_templates, const fs::path& a_path, const std::string& a_label) {
+                std::string text;
+                if (!fs::exists(a_path, ec) || !ReadWhole(a_path, text)) {
+                    return;
+                }
+                ++files;
+                if (a_templates) {
+                    g_gen.db.AddTemplates(text, a_label, &problems);
+                } else {
+                    g_gen.db.AddRules(text, a_label, &problems);
+                }
+			};
+			for (const auto& d : dirs) {
+				add(true, d.path / "templates.ini", d.name + "/templates.ini");
+			}
+			for (const auto& f : looseTemplates) {
+				add(true, loose / f, "Loose/" + f);
+			}
+			for (const auto& d : dirs) {
+				add(false, d.path / "morphs.ini", d.name + "/morphs.ini");
+			}
+			for (const auto& f : looseMorphs) {
+				add(false, loose / f, "Loose/" + f);
+			}
+
+			gi::Resolver res;
+			res.pluginIndex = [](const std::string& a_name) { return PluginIndex(a_name.c_str()); };
+			res.forms = [](const std::string& a_plugin, std::uint32_t a_local, std::vector<std::uint32_t>& a_out) { ExpandForm(LookupIn(a_plugin.c_str(), a_local), a_out, 0); };
+			g_gen.db.Finalize(res, &problems);
+
+			const auto& st = g_gen.db.GetStats();
+			spdlog::info("[bodygen] '{}': {} plugin folder(s) ({} skipped: plugin not loaded), {} loose templates file(s), {} loose morphs file(s), {} file(s) read; {} template(s) ({} malformed), {} line(s) "
+						 "({} malformed, {} usable), {} option(s) named a template that does not exist",
+				folder, dirs.size(), notLoaded, looseTemplates.size(), looseMorphs.size(), files, st.templates, st.malformedTemplates, st.rules, st.malformedRules, st.validRules, st.missingTemplates);
+			for (const auto& p : problems) {
+				spdlog::warn("[bodygen]   {}", p);
+			}
+			g_gen.ready = st.validRules > 0;
+		}
+
+		// [any thread] Reads the files once (at the first use, or when the game data is ready). False: BodyGen has nothing to give.
+		bool EnsureLoaded()
+		{
+			static std::once_flag once;
+			std::call_once(once, [] {
+				try {
+					Load();
+				} catch (const std::exception& e) {
+					spdlog::error("[bodygen] loading the files failed: {}", e.what());
+					g_gen.ready = false;
+				} catch (...) {
+					spdlog::error("[bodygen] loading the files failed");
+					g_gen.ready = false;
+				}
+			});
+			return g_gen.ready;
+		}
+
+		// [any thread] BodyGen for one actor that has no stored morphs: once per session unless a_force (Papyrus RegenerateMorphs). The result goes to the store,
+		// under the keyword None, like LooksMenu's. True: the actor got at least one morph.
+		bool Generate(RE::Actor* a_actor, bool a_female, bool a_force)
+		{
+			if (!a_actor || !EnsureLoaded()) {
+				return false;
+			}
+			const auto id = a_actor->GetFormID();
+			{
+				std::lock_guard lock(g_gen.mutex);
+				if (!g_gen.tried.insert(id).second && !a_force) {
+					return false;
+				}
+			}
+			const auto                                 chain = BuildChain(a_actor->GetNPC());
+			const auto*                                rule = chain.empty() ? nullptr : g_gen.db.MatchChain(chain, a_female);
+			std::vector<std::pair<std::string, float>> morphs;
+			bool                                       log = false;
+			{
+				std::lock_guard lock(g_gen.mutex);
+				if (rule) {
+					morphs = g_gen.db.Roll(*rule, g_gen.rng);
+				}
+				log = g_gen.logged < g_gen.logLimit;
+				g_gen.logged += log ? 1 : 0;
+			}
+			for (const auto& [name, value] : morphs) {
+				g_store.Set(id, a_female, name, 0, value);
+			}
+			if (log) {
+				std::string what;
+				for (const auto& [name, value] : morphs) {
+					what += std::format("{}{} {:.2f}", what.empty() ? "" : ", ", name, value);
+				}
+				std::string levels;
+				for (const auto& c : chain) {
+					levels += std::format("{}{:08X}{}{}", levels.empty() ? "" : " > ", c.formID, c.isNpc ? "" : " (leveled list)", c.race.empty() ? std::string() : " " + c.race);
+				}
+				spdlog::info("[bodygen] actor {:08X} ({}) chain [{}]: {}{}", id, a_female ? "female" : "male", levels,
+					rule ? std::format("line {} '{}' rolled {} morph(s){}{}", rule->source, rule->key, morphs.size(), morphs.empty() ? "" : ": ", what) : std::string("no line matches"),
+					a_force ? " (forced)" : "");
+			}
+			return !morphs.empty();
+		}
+
+		// [any thread] A new session and ClearAll let every actor be rolled again.
+		void ForgetAll()
+		{
+			std::lock_guard lock(g_gen.mutex);
+			g_gen.tried.clear();
+		}
+	}
+
 	// ---- which sliders an actor gets: its stored morphs (Papyrus BodyGen / the store) when it has any, else the INI's global sliders (the old test behaviour), else none.
 	struct WeightPick
 	{
@@ -1410,13 +1850,18 @@ namespace
 	};
 
 	// [any thread]
-	WeightPick PickWeights(const AutoSettings& a_cfg, RE::Actor* a_actor, bool a_female)
+	// a_generate: the attach path, where an actor with no stored morphs gets BodyGen's (templates.ini / morphs.ini). A live update never rolls.
+	WeightPick PickWeights(const AutoSettings& a_cfg, RE::Actor* a_actor, bool a_female, bool a_generate)
 	{
-		WeightPick     pick;
-		const auto     id = a_actor->GetFormID();
+		WeightPick pick;
+		const auto id = a_actor->GetFormID();
+		bool       generated = false;
+		if (a_generate && !g_store.Has(id, a_female)) {
+			generated = autogen::Generate(a_actor, a_female, false);
+		}
 		if (g_store.Has(id, a_female)) {
 			pick.weights = g_store.Effective(id, a_female);
-			pick.source = "stored morphs";
+			pick.source = generated ? "BodyGen" : "stored morphs";
 		} else if (a_cfg.useGlobalSliders && !a_cfg.weights.empty() && (!a_cfg.femaleOnly || a_female)) {
 			pick.weights = a_cfg.weights;
 			pick.source = "INI sliders";
@@ -1500,7 +1945,7 @@ namespace
 		}
 		const auto* npc = a_actor->GetNPC();
 		const bool  female = npc && npc->IsFemale();
-		const auto  pick = PickWeights(*cfg, a_actor, female);
+		const auto  pick = PickWeights(*cfg, a_actor, female, true);
 		Engine      engine;
 		if (!GetEngine(engine)) {
 			return;
@@ -1654,7 +2099,7 @@ namespace
 			}
 			return;
 		}
-		auto* actor = RE::TESForm::GetFormByID<RE::Actor>(a_formID);
+		auto* actor = FormById<RE::Actor>(a_formID);
 		if (!actor) {
 			if (logIt) {
 				spdlog::info("[update] {:08X}: not an actor that is loaded", a_formID);
@@ -1677,7 +2122,7 @@ namespace
 		}
 		const auto* npc = actor->GetNPC();
 		const bool  female = npc && npc->IsFemale();
-		const auto  pick = PickWeights(*cfg, actor, female);
+		const auto  pick = PickWeights(*cfg, actor, female, false);
 		std::vector<RE::BSGeometry*> geoms;
 		CollectGeometries(root, 0, geoms);
 		int queued = 0, restored = 0, unknown = 0, noEffect = 0;
@@ -1933,7 +2378,7 @@ namespace
 			std::vector<RE::BGSKeyword*> out;
 			if (a_actor) {
 				for (const auto id : g_store.Keywords(a_actor->GetFormID(), a_female, a_morph)) {
-					if (auto* keyword = RE::TESForm::GetFormByID<RE::BGSKeyword>(id)) {
+					if (auto* keyword = FormById<RE::BGSKeyword>(id)) {
 						out.push_back(keyword);
 					}
 				}
@@ -1946,16 +2391,18 @@ namespace
 			return a_actor ? g_store.Names(a_actor->GetFormID(), a_female) : std::vector<std::string>{};
 		}
 
-		// Clears the actor's morphs and "runs BodyGen again". The generator (templates.ini / morphs.ini) is not part of this version: the table stays empty, so the
-		// actor gets the INI sliders (if any) or its own body. a_update: put that on the body at once.
+		// Clears the actor's morphs and runs BodyGen again (templates.ini / morphs.ini). a_update: put the new body on the actor at once.
 		void RegenerateMorphs(std::monostate, RE::Actor* a_actor, bool a_update)
 		{
 			if (!a_actor) {
 				return;
 			}
 			g_store.RemoveActor(a_actor->GetFormID());
+			const auto* npc = a_actor->GetNPC();
+			const bool  female = npc && npc->IsFemale();
+			const bool  got = autogen::Generate(a_actor, female, true);
 			if (Loud()) {
-				spdlog::info("[papyrus] RegenerateMorphs actor {:08X} update {} (stored morphs cleared; no BodyGen generator in this version)", a_actor->GetFormID(), a_update);
+				spdlog::info("[papyrus] RegenerateMorphs actor {:08X} update {}: stored morphs cleared, BodyGen {}", a_actor->GetFormID(), a_update, got ? "gave new morphs" : "gave nothing");
 			}
 			if (a_update) {
 				PostUpdate(a_actor->GetFormID());
@@ -1976,6 +2423,7 @@ namespace
 		void ClearAll(std::monostate)
 		{
 			g_store.Clear();
+			autogen::ForgetAll();
 			spdlog::info("[papyrus] ClearAll: every stored morph removed");
 		}
 
@@ -1991,41 +2439,11 @@ namespace
 		bool RemoveSkinOverride(std::monostate, RE::Actor*) { return false; }
 	}
 
-	// The game functions the script binding code of CommonLibF4VR reaches through the VR address library. One missing id would end the game with a message box the
-	// first time a script calls us, so they are checked first (the VR address library is a CSV: header row "id,offset", then one "id,hexoffset" row per id).
+	// The game functions the script binding code of CommonLibF4VR reaches through the VR address library: one missing id would end the game with a message box the
+	// first time a script calls us, so they are checked first.
 	bool PapyrusIdsPresent()
 	{
-		const std::uint64_t wanted[] = { 996227, 571037, 541793, 1452752, 461710, 445184, 1429302, 897539, 709728, 522763, 648543 };
-		const auto          path = std::format("Data/F4SE/Plugins/version-{}.csv", REL::Module::get().version().string("-"));
-		std::ifstream       file(path);
-		if (!file) {
-			spdlog::error("[papyrus] cannot read the VR address library '{}': BodyGen natives not registered", path);
-			return false;
-		}
-		bool        found[std::size(wanted)]{};
-		std::string line;
-		std::getline(file, line);  // header row
-		while (std::getline(file, line)) {
-			std::uint64_t id = 0;
-			const auto    res = std::from_chars(line.data(), line.data() + line.size(), id);
-			if (res.ec != std::errc{}) {
-				continue;
-			}
-			for (std::size_t i = 0; i < std::size(wanted); ++i) {
-				found[i] = found[i] || wanted[i] == id;
-			}
-		}
-		std::string missing;
-		for (std::size_t i = 0; i < std::size(wanted); ++i) {
-			if (!found[i]) {
-				missing += std::format(" {}", wanted[i]);
-			}
-		}
-		if (!missing.empty()) {
-			spdlog::error("[papyrus] the VR address library lacks the id(s){}: the script binding code would crash the game, BodyGen natives NOT registered", missing);
-			return false;
-		}
-		return true;
+		return HaveIds({ 996227, 571037, 541793, 1452752, 461710, 445184, 1429302, 897539, 709728, 522763, 648543 }, "the Papyrus BodyGen natives");
 	}
 
 	bool RegisterPapyrus(RE::BSScript::IVirtualMachine* a_vm)
@@ -2057,6 +2475,7 @@ namespace
 	void CoSaveRevert(const F4SE::SerializationInterface*)
 	{
 		g_store.Clear();
+		autogen::ForgetAll();
 		spdlog::info("[save] revert: stored morphs cleared");
 	}
 
@@ -2163,7 +2582,8 @@ namespace
 		if (a_msg && a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
 			spdlog::info("game data ready; keys: probe VK {:#x}, apply VK {:#x}, restore VK {:#x}", g_probeKey.load(), g_applyKey.load(), g_restoreKey.load());
 			SelfTestTri();
-				RefreshAutoSettings();
+			RefreshAutoSettings();
+			autogen::EnsureLoaded();  // BodyGen's templates.ini / morphs.ini: read now, not in the middle of the first attach
 		}
 	}
 }
@@ -2183,7 +2603,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00050000;
+	a_info->version = 0x00060000;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}
@@ -2196,7 +2616,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadIn
 {
 	F4SE::Init(a_f4se, false);
 	InitLog();  // after Init, or the log lands in My Games\F4SE instead of My Games\Fallout4VR\F4SE
-	spdlog::info("BodyMorph VR {} (BodyGen: stored morphs per NPC, Papyrus natives, co-save; garment .tri via BODYTRI; F3/F4 store test, F7/F6 lab) loaded on runtime {}", kVersion.string(), REL::Module::get().version().string());
+	spdlog::info("BodyMorph VR {} (BodyGen: templates.ini / morphs.ini engine, stored morphs per NPC, Papyrus natives, co-save; garment .tri via BODYTRI; F3/F4 store test, F7/F6 lab) loaded on runtime {}", kVersion.string(), REL::Module::get().version().string());
 	LoadKeys();
 	F4SE::AllocTrampoline(128);
 	InstallAttachHook();
