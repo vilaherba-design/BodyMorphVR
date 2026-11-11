@@ -52,7 +52,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 6, 1, 0 };
+	constexpr REL::Version kVersion{ 0, 6, 2, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -1880,6 +1880,22 @@ namespace
 		}
 	}
 
+	// ---- loading a save: the game builds the actors of the loaded cell BEFORE F4SE calls our co-save load callback (0.6.1 test: attach 3.4 s before it), so at that
+	// moment the store is empty and an actor with a saved body would get a BodyGen roll instead. Between PreLoadGame / revert and PostLoadGame the attach hook therefore
+	// only RECORDS the meshes and remembers the actor; FinishLoad then gives each of them its stored morphs (or BodyGen's) with a live update.
+	std::atomic<std::int64_t>         g_loadPendingUntil{ 0 };  // steady-clock ms; expires by itself in case PostLoadGame never comes
+	std::mutex                        g_deferMutex;
+	std::unordered_set<std::uint32_t> g_deferred;
+
+	std::int64_t NowMs() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+	bool         LoadPending() { return NowMs() < g_loadPendingUntil.load(); }
+	void         SetLoadPending() { g_loadPendingUntil = NowMs() + 30000; }
+	void         Defer(std::uint32_t a_formID)
+	{
+		std::lock_guard lock(g_deferMutex);
+		g_deferred.insert(a_formID);
+	}
+
 	// ---- which sliders an actor gets: its stored morphs (Papyrus BodyGen / the store) when it has any, else the INI's global sliders (the old test behaviour), else none.
 	struct WeightPick
 	{
@@ -1983,7 +1999,13 @@ namespace
 		}
 		const auto* npc = a_actor->GetNPC();
 		const bool  female = npc && npc->IsFemale();
-		const auto  pick = PickWeights(*cfg, a_actor, female, true);
+		const bool  deferring = LoadPending();
+		WeightPick  waiting;
+		if (deferring) {
+			waiting.source = "waiting for the co-save";
+			Defer(a_actor->GetFormID());
+		}
+		const auto pick = deferring ? waiting : PickWeights(*cfg, a_actor, female, true);
 		Engine      engine;
 		if (!GetEngine(engine)) {
 			return;
@@ -2323,6 +2345,47 @@ namespace
 		}
 	}
 
+	// [any thread] The save is loaded (PostLoadGame / NewGame): the attach hook works normally again, and the actors it built while the co-save was still unread get
+	// their body now: stored morphs if the co-save had a table for them, else BodyGen's roll.
+	void FinishLoad()
+	{
+		g_loadPendingUntil = 0;
+		std::vector<std::uint32_t> ids;
+		{
+			std::lock_guard lock(g_deferMutex);
+			ids.assign(g_deferred.begin(), g_deferred.end());
+			g_deferred.clear();
+		}
+		spdlog::info("[load] save loaded: {} actor(s) were built before the co-save was read, {} table(s) in memory", ids.size(), g_store.TableCount());
+		if (ids.empty()) {
+			return;
+		}
+		if (auto* task = F4SE::GetTaskInterface()) {
+			task->AddTask([ids] {
+				int stored = 0, rolled = 0;
+				for (const auto id : ids) {
+					try {
+						auto* actor = FormById<RE::Actor>(id);
+						if (!actor) {
+							continue;
+						}
+						const auto* npc = actor->GetNPC();
+						const bool  female = npc && npc->IsFemale();
+						if (g_store.Has(id, female)) {
+							++stored;
+						} else if (autogen::Generate(actor, female, false)) {
+							++rolled;
+						}
+						UpdateActorNow(id);
+					} catch (...) {
+						spdlog::error("[load] {:08X}: update threw", id);
+					}
+				}
+				spdlog::info("[load] {} actor(s) got their saved morphs, {} a BodyGen roll", stored, rolled);
+			});
+		}
+	}
+
 	// [main] F3: puts [Test] sStoreMorphs into the store of the nearest NPC (what a script's BodyGen.SetMorph calls do) and updates its body.
 	void StoreTestSet()
 	{
@@ -2520,6 +2583,7 @@ namespace
 	{
 		g_store.Clear();
 		autogen::ForgetAll();
+		SetLoadPending();
 		spdlog::info("[save] revert: stored morphs cleared");
 	}
 
@@ -2623,6 +2687,11 @@ namespace
 
 	void OnMessage(F4SE::MessagingInterface::Message* a_msg)
 	{
+		if (a_msg && a_msg->type == F4SE::MessagingInterface::kPreLoadGame) {
+			SetLoadPending();
+		} else if (a_msg && (a_msg->type == F4SE::MessagingInterface::kPostLoadGame || a_msg->type == F4SE::MessagingInterface::kNewGame)) {
+			FinishLoad();
+		}
 		if (a_msg && a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
 			spdlog::info("game data ready; keys: probe VK {:#x}, apply VK {:#x}, restore VK {:#x}", g_probeKey.load(), g_applyKey.load(), g_restoreKey.load());
 			SelfTestTri();
@@ -2647,7 +2716,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00060100;
+	a_info->version = 0x00060200;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}

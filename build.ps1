@@ -23,7 +23,7 @@ if ($LASTEXITCODE) { throw "configure failed" }
 cmake --build "$W\build" --config Release -- /m /v:m
 if ($LASTEXITCODE) { throw "build failed" }
 $dll = "$W\build\Release\BodyMorphVR.dll"
-$zip = Join-Path $Out "BodyMorphVR-0.6.1-bodygen.zip"
+$zip = Join-Path $Out "BodyMorphVR-0.6.2-bodygen.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $z = [System.IO.Compression.ZipFile]::Open($zip, "Create")

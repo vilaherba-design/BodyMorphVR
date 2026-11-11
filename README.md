@@ -16,6 +16,11 @@ Escrito desde cero: no contiene ni se basa en código de LooksMenu.
 
 Licencia: GPL-3.0-or-later (ver LICENSE).
 
+## 0.6.2 (cargar partida: los cuerpos guardados vuelven)
+
+Al cargar una partida el juego construye a los NPC unos segundos ANTES de que F4SE llame al plugin con el co-save, así que un NPC con cuerpo guardado recibía una tirada de BodyGen y la barriga guardada llegaba tarde y no se aplicaba.
+Ahora, entre `PreLoadGame` y `PostLoadGame`, el hook solo registra las mallas y anota el actor; al terminar la carga cada uno recibe sus morphs guardados (o la tirada de BodyGen) con una actualización en vivo (línea `[load]` en el log).
+
 ## 0.6.1 (arreglo de un cierre del juego)
 
 La prueba de 0.5.0 cerró el juego en el driver de NVIDIA, 30 s después de pulsar F3 varias veces seguidas sobre la misma NPC: el plugin liberaba una malla clonada que ya estaba sustituida, pero el motor
