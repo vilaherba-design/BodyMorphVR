@@ -1992,7 +1992,7 @@ namespace
 	}
 
 	// The game functions the script binding code of CommonLibF4VR reaches through the VR address library. One missing id would end the game with a message box the
-	// first time a script calls us, so they are checked first (the VR address library is a CSV: first row "count,version", then "id,offset").
+	// first time a script calls us, so they are checked first (the VR address library is a CSV: header row "id,offset", then one "id,hexoffset" row per id).
 	bool PapyrusIdsPresent()
 	{
 		const std::uint64_t wanted[] = { 996227, 571037, 541793, 1452752, 461710, 445184, 1429302, 897539, 709728, 522763, 648543 };
@@ -2004,7 +2004,7 @@ namespace
 		}
 		bool        found[std::size(wanted)]{};
 		std::string line;
-		std::getline(file, line);  // "count,version"
+		std::getline(file, line);  // header row
 		while (std::getline(file, line)) {
 			std::uint64_t id = 0;
 			const auto    res = std::from_chars(line.data(), line.data() + line.size(), id);
