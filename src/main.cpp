@@ -52,7 +52,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 6, 2, 0 };
+	constexpr REL::Version kVersion{ 0, 6, 3, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -63,7 +63,7 @@ namespace
 	std::string      g_morphs = "PregnancyBelly:2.0";
 	bool             g_femaleOnly = true;
 	std::string      g_aliases = "NakedTorso=CBBE";
-	bool             g_scan = true;           // [Lab] iScan: after every swap, scan the process memory for other holders of the meshes
+	bool             g_scan = false;           // [Lab] iScan: after every swap, scan the process memory for other holders of the meshes
 	int              g_aliasVerts = 22708;    // [Morph] iAliasVertexCount: a shape matched by alias must have exactly this many vertices (0 = no check)
 	bool             g_autoEnabled = true;    // [Auto] bEnabled: morph NPC bodies as the game builds them (no key needed)
 	bool             g_autoPlayer = false;    // [Auto] bIncludePlayer
@@ -75,7 +75,7 @@ namespace
 	std::atomic<int> g_storeClearKey{ 0x73 };  // [Test] iClearKey, F4: empty the store of the nearest NPC and update it
 	std::string      g_storeMorphs = "PregnancyBelly:2.0";  // [Test] sStoreMorphs
 	int              g_autoScanFirst = 0;     // [Auto] iScanFirst: scan memory after the first N auto-morphed meshes to check that no stale draw record exists (diagnostic)
-	bool             g_patchHolders = true;   // [Lab] iPatchHolders: repoint the engine's draw records (copies of the vertex buffer pointer) at the clone / back
+	bool             g_patchHolders = false;   // [Lab] iPatchHolders: repoint the engine's draw records (copies of the vertex buffer pointer) at the clone / back
 
 	void InitLog()
 	{
@@ -128,8 +128,8 @@ namespace
 		g_autoLogAttaches = std::clamp(ini.GetInt("Auto", "iLogAttaches", 120), 0, 2000);
 		g_useGlobalSliders = ini.GetInt("Auto", "bUseGlobalSliders", 1) != 0;
 		g_storeMorphs = ini.GetString("Test", "sStoreMorphs", "PregnancyBelly:2.0");
-		g_scan = ini.GetInt("Lab", "iScan", 1) != 0;
-		g_patchHolders = ini.GetInt("Lab", "iPatchHolders", 1) != 0;
+		g_scan = ini.GetInt("Lab", "iScan", 0) != 0;
+		g_patchHolders = ini.GetInt("Lab", "iPatchHolders", 0) != 0;
 	}
 
 	void LoadKeys()
@@ -2716,7 +2716,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00060200;
+	a_info->version = 0x00060300;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}

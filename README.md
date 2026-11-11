@@ -16,6 +16,11 @@ Escrito desde cero: no contiene ni se basa en código de LooksMenu.
 
 Licencia: GPL-3.0-or-later (ver LICENSE).
 
+## 0.6.3 (estabilidad)
+
+- `[Lab] iScan` e `iPatchHolders` vienen a 0 por defecto. Con ellos activos, cargar una segunda partida en la misma sesion llego a colgar el driver de NVIDIA (registros de dibujo obsoletos). Los cuerpos siguen viendose igual: el clon ya se sube a la GPU por la via normal.
+- Validado en juego con los ini de BodyGen de Silhouette (512 plantillas, 217 reglas).
+
 ## 0.6.2 (cargar partida: los cuerpos guardados vuelven)
 
 Al cargar una partida el juego construye a los NPC unos segundos ANTES de que F4SE llame al plugin con el co-save, así que un NPC con cuerpo guardado recibía una tirada de BodyGen y la barriga guardada llegaba tarde y no se aplicaba.
