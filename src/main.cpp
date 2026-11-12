@@ -1833,7 +1833,7 @@ namespace
 					spdlog::warn("[presets] {}: no body .tri, so {} NPCs get no preset body (build the body in BodySlide with \"Build Morphs\" ticked)", cfg[i].label, cfg[i].label);
 					continue;
 				}
-				const auto* set = bs::PickSet(sets, cfg[i].output, bs::BuildChoice(selection, cfg[i].output));
+				const auto* set = bs::PickSet(sets, cfg[i].output, bs::BuildChoice(selection, cfg[i].output), &names[i]);
 				st.sex[i].setName = set ? set->name : std::string();
 				// what the body on disk was built with: "" = zeroed sliders (every slider at 0), "(defaults)" = the slider set's defaults, else a preset's name
 				const std::string                          built = a_ini.GetString("Presets", cfg[i].builtKey, "");

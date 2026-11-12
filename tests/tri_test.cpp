@@ -534,6 +534,12 @@ int main()
 		CHECK(bs::PickSet(sets, kF, "CBBE Body") == &sets[0]);
 		CHECK(bs::PickSet(sets, kF, "") == &sets[1] && bs::PickSet(sets, kF, "gone") == &sets[1]);
 		CHECK(bs::PickSet(sets, kM, "") == &sets[2] && bs::PickSet(sets, "meshes\\nothing", "") == nullptr);
+		{
+			// two sets write the same body: the one whose sliders are all in the .tri wins over a bigger one with sliders the .tri lacks
+			const std::unordered_set<std::string> triNames{ "breasts", "waist", "ankles", "butt" };
+			CHECK(bs::PickSet(sets, kF, "", &triNames) == &sets[0]);  // "CBBE Body Physics" has "Old", which this .tri lacks
+			CHECK(bs::PickSet(sets, kF, "CBBE Body Physics", &triNames) == &sets[1]);
+		}
 
 		// resolving: defaults for what the preset leaves out, explicit zeros, inversion, values over 100, non-morph sliders dropped
 		const auto value = [](const std::vector<std::pair<std::string, float>>& m, const char* n) { for (const auto& [k, v] : m) if (k == n) return v; return -99.0F; };

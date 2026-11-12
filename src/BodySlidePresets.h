@@ -506,11 +506,13 @@ namespace bodymorph::bsp
 		return choice;
 	}
 
-	// The slider set a body output is built with: the user's recorded choice, else the candidate with the most morph sliders (ties: first read). Null: none.
-	inline const SliderSet* PickSet(const std::vector<SliderSet>& a_sets, std::string_view a_output, std::string_view a_choice)
+	// The slider set a body output is built with: the user's recorded choice, else the candidate whose morph sliders best match the body's .tri (several sets
+	// can write the same output, e.g. BodyTalk4 and BodyTalk4-NeverNude: the one the mesh was built from has all its sliders in the .tri); ties: the first read.
+	// a_triMorphs: the lower-case morph names of the .tri, or null to count every morph slider. Null result: no set writes that output.
+	inline const SliderSet* PickSet(const std::vector<SliderSet>& a_sets, std::string_view a_output, std::string_view a_choice, const std::unordered_set<std::string>* a_triMorphs = nullptr)
 	{
 		const SliderSet* best = nullptr;
-		std::size_t      bestCount = 0;
+		long             bestScore = 0;
 		for (const auto& s : a_sets) {
 			if (s.output != a_output) {
 				continue;
@@ -518,10 +520,15 @@ namespace bodymorph::bsp
 			if (!a_choice.empty() && Lower(s.name) == Lower(a_choice)) {
 				return &s;
 			}
-			const auto count = static_cast<std::size_t>(std::count_if(s.sliders.begin(), s.sliders.end(), [](const SliderInfo& i) { return i.morph; }));
-			if (!best || count > bestCount) {
+			long score = 0;  // sliders the .tri has, minus sliders it lacks
+			for (const auto& i : s.sliders) {
+				if (i.morph) {
+					score += (!a_triMorphs || a_triMorphs->count(Lower(i.name))) ? 1 : -1;
+				}
+			}
+			if (!best || score > bestScore) {
 				best = &s;
-				bestCount = count;
+				bestScore = score;
 			}
 		}
 		return best;
