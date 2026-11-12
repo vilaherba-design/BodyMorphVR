@@ -48,14 +48,11 @@ foreach ($v in @("x1", "x1.5")) {
   $files["10 Silhouette $v/F4SE/Plugins/BodyMorphVR_Silhouette_README.txt"] = "$W\bodygen\Silhouette_README.txt"
   $files["10 Silhouette $v/F4SE/Plugins/BodyMorphVR_Silhouette_LICENSE_GPL-3.0.txt"] = "$W\bodygen\Silhouette_LICENSE_GPL-3.0.txt"
 }
-# GPL: the port's own source goes inside the mod as a nested zip
-$srcZip = Join-Path $W "BodyMorphVR_source.zip"
-$sz = [System.IO.Compression.ZipFile]::Open($srcZip, "Create")
-foreach ($f in @("CMakeLists.txt", "vcpkg.json", "build.ps1", "README.md", "docs/DEVELOPMENT.md", "LICENSE", "src/main.cpp", "src/pch.h", "src/TriFile.h", "src/TriFile.cpp", "src/MorphApply.h", "src/MorphList.h", "src/MorphStore.h", "src/BodyGenIni.h", "src/BodySlidePresets.h", "src/IniFile.h", "src/TriPath.h", "src/HolderScan.h", "data/BodyMorphVR.ini", "data/Scripts/BodyGen.pex", "data/Source/Scripts/BodyGen.psc", "tools/make_bodygen_pex.py", "tools/scale_templates.py", "examples/BodyGen/Loose/BodyMorphVR_example_templates.ini", "examples/BodyGen/Loose/BodyMorphVR_example_morphs.ini", "fomod/info.xml", "fomod/ModuleConfig.xml", "tests/run.sh", "tests/tri_test.cpp")) {
-  [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($sz, (Join-Path $W $f), "BodyMorphVR/$f")
-}
-$sz.Dispose()
-$files["${C}F4SE/Plugins/BodyMorphVR_source.zip"] = $srcZip
+# GPL: no nested zip (Nexus quarantines archives inside archives). A text file points to the public source of this exact build.
+$srcTxt = Join-Path $W "BodyMorphVR_SOURCE.txt"
+$commit = if ($env:BUILD_COMMIT) { $env:BUILD_COMMIT } else { "see the tag or commit matching this version" }
+@("BodyMorphVR is free software under the GPL-3.0 (see the LICENSE in the repository).", "Complete corresponding source of this build, including the CommonLibF4VR submodule:", "https://github.com/vilaherba-design/BodyMorphVR", "Commit: $commit") | Set-Content -Path $srcTxt -Encoding UTF8
+$files["${C}F4SE/Plugins/BodyMorphVR_SOURCE.txt"] = $srcTxt
 foreach ($k in $files.Keys) { [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($z, $files[$k], $k) }
 $z.Dispose()
 Get-Item $dll, $zip | Format-Table Name, Length
