@@ -14,6 +14,7 @@
 // Threads: [poll thread] reads the keys, [main] (F4SE task) does everything else; every game pointer read goes through SEH.
 
 #include "BodyGenIni.h"
+#include "BodySlidePresets.h"
 #include "HolderScan.h"
 #include "IniFile.h"
 #include "MorphApply.h"
@@ -52,7 +53,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 7, 0, 0 };
+	constexpr REL::Version kVersion{ 0, 8, 0, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -1706,18 +1707,234 @@ namespace
 			return true;
 		}
 
+		// ---- BodySlide presets as bodies (0.8.0). The plugin reads the user's own BodySlide files (Data\Tools\BodySlide: presets, slider sets, build selection) and the
+		// body .tri of each sex, and hands the presets out by weight to every NPC of the listed races that no FormID / plugin line of a BodyGen ini names.
+		// Reading and resolving are in BodySlidePresets.h (unit-tested without the game).
+		namespace bs = bodymorph::bsp;
+
+		struct PresetSex
+		{
+			std::vector<bs::Body> pool;
+			bool                  triFound = false;
+			std::string           setName;
+		};
+		struct PresetState
+		{
+			PresetSex                sex[2];  // 0 male, 1 female
+			std::vector<std::string> races;   // lower case
+			bool                     enabled = false;
+			bool                     overGeneral = true;  // presets win over "All|..." lines of BodyGen ini files
+			bool                     notify = true;
+			int                      presetsRead = 0;
+			std::string              problem;  // what the player is told once ("" = nothing to tell)
+		};
+		PresetState g_presets;  // read-only after LoadPresets
+
+		std::vector<std::string> SplitList(const std::string& a_text)
+		{
+			std::vector<std::string> out;
+			for (const auto piece : gi::Split(a_text, ',')) {
+				if (const auto t = gi::Trim(piece); !t.empty()) {
+					out.push_back(bs::Lower(t));
+				}
+			}
+			return out;
+		}
+
+		void CollectFiles(const std::filesystem::path& a_folder, std::initializer_list<const char*> a_exts, std::vector<std::filesystem::path>& a_out)
+		{
+			namespace fs = std::filesystem;
+			std::error_code ec;
+			if (!fs::is_directory(a_folder, ec)) {
+				return;
+			}
+			for (fs::recursive_directory_iterator it(a_folder, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+				std::error_code ec2;
+				if (!it->is_regular_file(ec2)) {
+					continue;
+				}
+				const auto ext = bs::Lower(it->path().extension().string());
+				for (const char* want : a_exts) {
+					if (ext == want) {
+						a_out.push_back(it->path());
+						break;
+					}
+				}
+			}
+			std::sort(a_out.begin(), a_out.end());  // a fixed order: "the first preset of a name wins" must not depend on the file system
+		}
+
+		void LoadPresets(const bodymorph::IniFile& a_ini)
+		{
+			namespace fs = std::filesystem;
+			auto& st = g_presets;
+			if (a_ini.GetInt("Presets", "bEnable", 1) == 0) {
+				spdlog::info("[presets] switched off by the INI ([Presets] bEnable=0)");
+				return;
+			}
+			const fs::path folder = a_ini.GetString("Presets", "sFolder", "Data\\Tools\\BodySlide");
+			st.races = SplitList(a_ini.GetString("Presets", "sRaces", "HumanRace"));
+			st.overGeneral = a_ini.GetInt("Presets", "bOverGeneralRules", 1) != 0;
+			st.notify = a_ini.GetInt("Presets", "bNotify", 1) != 0;
+
+			std::vector<fs::path> presetFiles, setFiles;
+			CollectFiles(folder / "SliderPresets", { ".xml" }, presetFiles);
+			CollectFiles(folder / "SliderSets", { ".osp", ".xml" }, setFiles);
+			std::vector<bs::Preset>    presets;
+			std::vector<bs::SliderSet> sets;
+			std::string                text;
+			for (const auto& f : presetFiles) {
+				if (ReadWhole(f, text)) {
+					bs::ParsePresets(text, f.filename().string(), presets);
+				}
+			}
+			for (const auto& f : setFiles) {
+				if (ReadWhole(f, text)) {
+					bs::ParseSliderSets(text, f.filename().string(), sets);
+				}
+			}
+			std::string selection;
+			ReadWhole(folder / "BuildSelection.xml", selection);
+			st.presetsRead = static_cast<int>(presets.size());
+			spdlog::info("[presets] '{}': {} preset(s) in {} file(s), {} slider set(s) in {} file(s)", folder.string(), presets.size(), presetFiles.size(), sets.size(), setFiles.size());
+
+			bs::PoolOptions opt;
+			opt.minFit = static_cast<float>(std::clamp(a_ini.GetInt("Presets", "iMinFitPercent", 50), 1, 100)) / 100.0f;
+			opt.defaultWeight = std::clamp(a_ini.GetInt("Presets", "iDefaultWeight", 2), 1, 100);
+			opt.autoWeights = a_ini.GetInt("Presets", "bAutoWeights", 1) != 0;
+			opt.exclude = SplitList(a_ini.GetString("Presets", "sExclude", "(outfit),zeroed,cbbe vanilla"));
+			for (const auto& n : SplitList(a_ini.GetString("Presets", "sNeverMorphs", "Erection,Erection Up,Erection Down,CErection,VaginaPenetrate,AnusPenetrate,VaginaSpread,ButtcheeksSpread"))) {
+				opt.never.insert(n);
+			}
+			opt.weightOf = [&a_ini](const std::string& a_name) { return a_ini.GetInt("PresetWeights", a_name, -1); };
+
+			struct SexCfg
+			{
+				const char* label;
+				const char* triKey;
+				const char* triDefault;
+				const char* builtKey;
+				const char* output;
+			};
+			const SexCfg cfg[2] = {
+				{ "male", "sMaleTri", "Data\\Meshes\\Actors\\Character\\CharacterAssets\\MaleBody.tri", "sMaleBuiltWith", "meshes\\actors\\character\\characterassets\\malebody" },
+				{ "female", "sFemaleTri", "Data\\Meshes\\Actors\\Character\\CharacterAssets\\FemaleBody.tri", "sFemaleBuiltWith", "meshes\\actors\\character\\characterassets\\femalebody" },
+			};
+			bodymorph::TriFile                 tri[2];
+			std::unordered_set<std::string>    names[2];
+			for (int i = 0; i < 2; ++i) {
+				st.sex[i].triFound = LoadTri(a_ini.GetString("Presets", cfg[i].triKey, cfg[i].triDefault), tri[i]);
+				if (st.sex[i].triFound) {
+					names[i] = bs::MorphNames(tri[i]);
+				}
+			}
+			for (int i = 0; i < 2; ++i) {
+				if (!st.sex[i].triFound) {
+					spdlog::warn("[presets] {}: no body .tri, so {} NPCs get no preset body (build the body in BodySlide with \"Build Morphs\" ticked)", cfg[i].label, cfg[i].label);
+					continue;
+				}
+				const auto* set = bs::PickSet(sets, cfg[i].output, bs::BuildChoice(selection, cfg[i].output));
+				st.sex[i].setName = set ? set->name : std::string();
+				// what the body on disk was built with: "" = zeroed sliders (every slider at 0), "(defaults)" = the slider set's defaults, else a preset's name
+				const std::string                          built = a_ini.GetString("Presets", cfg[i].builtKey, "");
+				std::vector<std::pair<std::string, float>> base;
+				if (gi::EqualsNoCase(built, "(defaults)")) {
+					base = bs::Resolve(bs::Preset{}, set);
+				} else if (!built.empty()) {
+					const auto it = std::find_if(presets.begin(), presets.end(), [&](const bs::Preset& p) { return gi::EqualsNoCase(p.name, built); });
+					if (it != presets.end()) {
+						base = bs::Resolve(*it, set);
+					} else {
+						spdlog::warn("[presets] {}: {}='{}' names no installed preset: taken as zeroed sliders", cfg[i].label, cfg[i].builtKey, built);
+					}
+				}
+				std::vector<std::string> notes;
+				st.sex[i].pool = bs::BuildPool(presets, set, tri[i], names[1 - i], opt, base, &notes);
+				int total = 0;
+				for (const auto& b : st.sex[i].pool) {
+					total += b.weight;
+				}
+				spdlog::info("[presets] {}: slider set '{}'{}, body built with {}, {} morph name(s) in the .tri, {} bod{} in the pool ({} slot(s))", cfg[i].label, st.sex[i].setName,
+					set ? "" : " (none found: presets are taken as written)", built.empty() ? "zeroed sliders" : "'" + built + "'", names[i].size(), st.sex[i].pool.size(), st.sex[i].pool.size() == 1 ? "y" : "ies", total);
+				for (const auto& b : st.sex[i].pool) {
+					spdlog::info("[presets]   {} '{}' ({}): weight {}{} = {:.1f} %, {} morph(s), fit {:.0f} %, size {:.2f}", cfg[i].label, b.name, b.file, b.weight, b.autoWeight ? " (auto)" : "",
+						total ? 100.0 * b.weight / total : 0.0, b.morphs.size(), b.fit * 100.0f, b.size);
+				}
+				for (const auto& n : notes) {
+					spdlog::info("[presets]   {} not used: {}", cfg[i].label, n);
+				}
+			}
+			st.enabled = !st.sex[0].pool.empty() || !st.sex[1].pool.empty();
+
+			// what the player has to be told (once per session, after a save is loaded)
+			if (!st.sex[0].triFound && !st.sex[1].triFound) {
+				st.problem = "BodyMorph VR: no body .tri files found. Build your bodies and outfits in BodySlide with \"Build Morphs\" ticked.";
+			} else if (!st.sex[1].triFound) {
+				st.problem = "BodyMorph VR: FemaleBody.tri not found. Build the female body in BodySlide with \"Build Morphs\" ticked.";
+			} else if (presets.empty()) {
+				st.problem = "BodyMorph VR: no BodySlide presets found in Data\\Tools\\BodySlide\\SliderPresets.";
+			} else if (st.sex[1].pool.empty()) {
+				st.problem = "BodyMorph VR: none of your BodySlide presets fits the female body. See BodyMorphVR.log.";
+			}
+			if (!st.problem.empty()) {
+				spdlog::warn("[presets] {}", st.problem);
+			}
+		}
+
+		// [any thread] The preset pool for an NPC, or null: presets on, a pool for its sex, and its race in the list.
+		const std::vector<bs::Body>* PresetPool(const std::vector<gi::NpcInfo>& a_chain, bool a_female)
+		{
+			const auto& sex = g_presets.sex[a_female ? 1 : 0];
+			if (!g_presets.enabled || sex.pool.empty() || a_chain.empty()) {
+				return nullptr;
+			}
+			// the race of the NPC itself, else of the first level of its template chain that has one
+			for (const auto& level : a_chain) {
+				if (level.isNpc && !level.race.empty()) {
+					const auto race = bs::Lower(level.race);
+					return std::find(g_presets.races.begin(), g_presets.races.end(), race) != g_presets.races.end() ? &sex.pool : nullptr;
+				}
+			}
+			return nullptr;
+		}
+
+		// [main thread task] Tells the player once per session what is missing (a HUD line, like the game's own notices).
+		void NotifyOnce()
+		{
+			static std::atomic<bool> told{ false };
+			if (!g_presets.notify || g_presets.problem.empty() || told.exchange(true)) {
+				return;
+			}
+			if (!HaveIds({ 1163005 }, "the in-game notice")) {
+				return;
+			}
+			if (auto* task = F4SE::GetTaskInterface()) {
+				task->AddTask([] {
+					using func_t = void(const char*, const char*, bool, bool);
+					static REL::Relocation<func_t*> show{ REL::ID(1163005) };  // SendHUDMessage::ShowHUDMessage(message, sound, throttle, warning)
+					show(g_presets.problem.c_str(), nullptr, false, true);
+				});
+			}
+		}
+
 		void Load()
 		{
 			namespace fs = std::filesystem;
 			const auto ini = ReadIni();
+			g_gen.logLimit = std::clamp(ini.GetInt("BodyGen", "iLogActors", 60), 0, 5000);
+			const int seed = ini.GetInt("BodyGen", "iSeed", 0);
+			g_gen.rng.seed(seed ? static_cast<std::uint32_t>(seed) : std::random_device{}());
+			try {
+				LoadPresets(ini);
+			} catch (const std::exception& e) {
+				spdlog::error("[presets] reading BodySlide's files failed: {}", e.what());
+				g_presets.enabled = false;
+			}
 			if (ini.GetInt("BodyGen", "bEnable", 1) == 0) {
 				spdlog::info("[bodygen] switched off by the INI (bEnable=0)");
 				return;
 			}
 			const std::string folder = ini.GetString("BodyGen", "sFolder", "Data\\F4SE\\Plugins\\F4EE\\BodyGen");
-			g_gen.logLimit = std::clamp(ini.GetInt("BodyGen", "iLogActors", 60), 0, 5000);
-			const int seed = ini.GetInt("BodyGen", "iSeed", 0);
-			g_gen.rng.seed(seed ? static_cast<std::uint32_t>(seed) : std::random_device{}());
 			if (!HaveIds({ 711558 }, "BodyGen (plugin list)") || !FormLookupAvailable()) {
 				return;  // (both log the ids that are missing)
 			}
@@ -1809,7 +2026,7 @@ namespace
 			g_gen.ready = st.validRules > 0;
 		}
 
-		// [any thread] Reads the files once (at the first use, or when the game data is ready). False: BodyGen has nothing to give.
+		// [any thread] Reads the files once (at the first use, or when the game data is ready). False: neither the BodyGen ini files nor the presets have anything to give.
 		bool EnsureLoaded()
 		{
 			static std::once_flag once;
@@ -1824,7 +2041,7 @@ namespace
 					g_gen.ready = false;
 				}
 			});
-			return g_gen.ready;
+			return g_gen.ready || g_presets.enabled;
 		}
 
 		// [any thread] BodyGen for one actor that has no stored morphs: once per session unless a_force (Papyrus RegenerateMorphs). The result goes to the store,
@@ -1842,12 +2059,27 @@ namespace
 				}
 			}
 			const auto                                 chain = BuildChain(a_actor->GetNPC());
-			const auto*                                rule = chain.empty() ? nullptr : g_gen.db.MatchChain(chain, a_female);
+			const auto* rule = (chain.empty() || !g_gen.ready) ? nullptr : g_gen.db.MatchChain(chain, a_female);
+			// A line that names this NPC (FormID) or its plugin always decides. Otherwise a BodySlide preset does; an "All|..." line only when presets are off or lose to it.
+			const auto* pool = PresetPool(chain, a_female);
+			if (pool && rule && rule->kind == gi::Rule::Kind::kAll && !g_presets.overGeneral) {
+				pool = nullptr;
+			}
+			if (pool && rule && rule->kind != gi::Rule::Kind::kAll) {
+				pool = nullptr;
+			}
+			const bs::Body*                            body = nullptr;
 			std::vector<std::pair<std::string, float>> morphs;
 			bool                                       log = false;
 			{
 				std::lock_guard lock(g_gen.mutex);
-				if (rule) {
+				if (pool) {
+					body = bs::Pick(*pool, g_gen.rng);
+				}
+				if (body) {
+					morphs = body->morphs;
+					morphs.emplace_back(bs::MarkerName(body->name), 1.0f);
+				} else if (rule) {
 					morphs = g_gen.db.Roll(*rule, g_gen.rng);
 				}
 				log = g_gen.logged < g_gen.logLimit;
@@ -1866,7 +2098,8 @@ namespace
 					levels += std::format("{}{:08X}{}{}", levels.empty() ? "" : " > ", c.formID, c.isNpc ? "" : " (leveled list)", c.race.empty() ? std::string() : " " + c.race);
 				}
 				spdlog::info("[bodygen] actor {:08X} ({}) chain [{}]: {}{}", id, a_female ? "female" : "male", levels,
-					rule ? std::format("line {} '{}' rolled {} morph(s){}{}", rule->source, rule->key, morphs.size(), morphs.empty() ? "" : ": ", what) : std::string("no line matches"),
+					body ? std::format("BodySlide preset '{}' (weight {}): {}", body->name, body->weight, what)
+						 : rule ? std::format("line {} '{}' rolled {} morph(s){}{}", rule->source, rule->key, morphs.size(), morphs.empty() ? "" : ": ", what) : std::string("no line or preset matches"),
 					a_force ? " (forced)" : "");
 			}
 			return !morphs.empty();
@@ -2691,6 +2924,7 @@ namespace
 			SetLoadPending();
 		} else if (a_msg && (a_msg->type == F4SE::MessagingInterface::kPostLoadGame || a_msg->type == F4SE::MessagingInterface::kNewGame)) {
 			FinishLoad();
+			autogen::NotifyOnce();
 		}
 		if (a_msg && a_msg->type == F4SE::MessagingInterface::kGameDataReady) {
 			spdlog::info("game data ready; keys: probe VK {:#x}, apply VK {:#x}, restore VK {:#x}", g_probeKey.load(), g_applyKey.load(), g_restoreKey.load());
@@ -2716,7 +2950,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00070000;
+	a_info->version = 0x00080000;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}
@@ -2729,7 +2963,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Load(const F4SE::LoadIn
 {
 	F4SE::Init(a_f4se, false);
 	InitLog();  // after Init, or the log lands in My Games\F4SE instead of My Games\Fallout4VR\F4SE
-	spdlog::info("BodyMorph VR {} (BodyGen: templates.ini / morphs.ini engine, stored morphs per NPC, Papyrus natives, co-save; garment .tri via BODYTRI; F3/F4 store test, F7/F6 lab) loaded on runtime {}", kVersion.string(), REL::Module::get().version().string());
+	spdlog::info("BodyMorph VR {} (BodySlide presets as NPC bodies, BodyGen: templates.ini / morphs.ini engine, stored morphs per NPC, Papyrus natives, co-save; garment .tri via BODYTRI; F3/F4 store test, F7/F6 lab) loaded on runtime {}", kVersion.string(), REL::Module::get().version().string());
 	LoadKeys();
 	F4SE::AllocTrampoline(128);
 	InstallAttachHook();

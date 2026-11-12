@@ -16,6 +16,19 @@ Escrito desde cero: no contiene ni se basa en código de LooksMenu.
 
 Licencia: GPL-3.0-or-later (ver LICENSE).
 
+## 0.8.0 (los presets de BodySlide son los cuerpos)
+
+- `src/BodySlidePresets.h` (C++ puro, con pruebas): lee `Tools\BodySlide\SliderPresets\*.xml`, `SliderSets\*.osp|xml` y `BuildSelection.xml`.
+  Valor de un slider = el `big` del preset, o el `default` del slider set si el preset no lo nombra (BodyTalk 4 tiene 26 sliders con default 100), invertido si `invert="true"`;
+  los sliders zap / uv / clamp no cuentan. Medido en la instalación de pruebas: `FemaleBody.nif` y `MaleBody.nif` son idénticos a su malla de referencia (construidos a cero).
+- Un preset es de un cuerpo si al menos el 50 % de sus sliders está en el `.tri` de ese cuerpo (`FemaleBody.tri` / `MaleBody.tri`) y encaja mejor que en el otro.
+- Pesos: `[PresetWeights]` del INI; sin línea, 3 / 2 / 1 según el desplazamiento RMS del preset frente al resto (`bAutoWeights`).
+- Orden de decisión por NPC: línea FormID o de plugin de un ini BodyGen > preset de BodySlide > línea `All|...` (`bOverGeneralRules=1`).
+  Con el preset se guarda el marcador `BMVR_Preset_<nombre>` (no mueve nada; deja constancia y fija el sorteo).
+- `sNeverMorphs`: sliders de estado (Erection...) que ningún preset fija.
+- Aviso en el HUD (id 1163005, `ShowHUDMessage`, comprobado antes en la address library) si faltan los `.tri` o los presets.
+- Instalador: los cuerpos de BodySlide van siempre; Silhouette (x1.5 u original) es un extra opcional solo para personajes con nombre. Se quitó la variante x2.
+
 ## 0.7.0 (instalable: asistente FOMOD)
 
 - El zip trae un instalador FOMOD (`fomod/`): nucleo en `00 Core`, y a elegir los ini de Silhouette x2 (valores de mujer duplicados con `tools/scale_templates.py`), los de Silhouette originales, el ejemplo sencillo o ninguno. Los ini de Silhouette (GPL-3.0, ReidenXerx) van con su licencia y creditos.

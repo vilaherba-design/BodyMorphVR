@@ -9,9 +9,10 @@
         <group name="Read this first" type="SelectAll">
           <plugins order="Explicit">
             <plugin name="Requirements and one manual step">
-              <description>Needs Fallout 4 VR 1.2.72, F4SE VR and VR Address Library for F4SEVR.
-Nothing changes in the game until you build your body and outfits in BodySlide with "Build Morphs" ticked (preset "CBBE Zeroed Sliders" or any zeroed preset, then Batch Build): that writes the .tri files this mod deforms.
-For men, install BodyTalk 4 (Nude + clothing) and build it the same way. BodyTalk's flat-game hands (MaleHands.nif, 1stPersonMaleHands.nif, 1stPersonMaleBody.nif) make VR hands disappear: hide those three files in MO2.</description>
+              <description>Needs Fallout 4 VR 1.2.72, F4SE VR, VR Address Library for F4SEVR, BodySlide and a body with BodySlide sliders (CBBE; BodyTalk 4 for men).
+One manual step, once: in BodySlide pick the preset "CBBE Zeroed Sliders", tick "Build Morphs" and run Batch Build for your body and outfits. That writes the .tri files this mod deforms; without them nothing changes (the game tells you if they are missing).
+After that the mod hands out the BodySlide presets you have installed by itself. To add bodies, just install more presets.
+BodyTalk's flat-game hands (MaleHands.nif, 1stPersonMaleHands.nif, 1stPersonMaleBody.nif) make VR hands disappear: hide those three files in MO2.</description>
               <files/>
               <typeDescriptor><type name="Required"/></typeDescriptor>
             </plugin>
@@ -21,26 +22,21 @@ For men, install BodyTalk 4 (Nude + clothing) and build it the same way. BodyTal
     </installStep>
     <installStep name="Bodies">
       <optionalFileGroups order="Explicit">
-        <group name="BodyGen files (who gets which body)" type="SelectExactlyOne">
+        <group name="Named characters (optional extra)" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Silhouette bodies, more visible (x2)">
-              <description>The 41 female and 41 male bodies of Silhouette (ReidenXerx, GPL-3.0) with the female values doubled, plus its rules for named people (Piper, Cait, Curie...). Recommended.</description>
-              <files><folder source="10 Silhouette x2" destination="" priority="0"/></files>
+            <plugin name="No extra files">
+              <description>Everybody gets one of the BodySlide presets you have installed (CBBE's and BodyTalk's own presets, plus any you add). Nothing else is needed. Recommended.</description>
+              <files/>
               <typeDescriptor><type name="Recommended"/></typeDescriptor>
             </plugin>
-            <plugin name="Silhouette bodies, original values">
-              <description>Silhouette's own files, unchanged. Realistic and subtle: hard to notice in VR.</description>
+            <plugin name="Named characters by Silhouette (x1.5)">
+              <description>Adds Silhouette's BodyGen files (ReidenXerx, GPL-3.0, included with credit): Piper, Cait, Curie and about 200 other named people get the body its author chose for each. Female values x1.5 so they show in VR. Everybody else still gets your BodySlide presets.</description>
+              <files><folder source="10 Silhouette x1.5" destination="" priority="0"/></files>
+              <typeDescriptor><type name="Optional"/></typeDescriptor>
+            </plugin>
+            <plugin name="Named characters by Silhouette (original values)">
+              <description>The same files with Silhouette's own values, unchanged. Realistic and subtle: hard to notice in VR.</description>
               <files><folder source="10 Silhouette x1" destination="" priority="0"/></files>
-              <typeDescriptor><type name="Optional"/></typeDescriptor>
-            </plugin>
-            <plugin name="Simple example">
-              <description>Two example templates: every human woman gets either a big belly or a curvy body. To check that the mod works.</description>
-              <files><folder source="10 Example" destination="" priority="0"/></files>
-              <typeDescriptor><type name="Optional"/></typeDescriptor>
-            </plugin>
-            <plugin name="None (I bring my own BodyGen files)">
-              <description>Installs no BodyGen files. Put your own *_templates.ini / *_morphs.ini in Data\F4SE\Plugins\F4EE\BodyGen\Loose\.</description>
-              <files/>
               <typeDescriptor><type name="Optional"/></typeDescriptor>
             </plugin>
           </plugins>

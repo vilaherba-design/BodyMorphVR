@@ -1,7 +1,7 @@
 <fomod>
   <Name>BodyMorph VR</Name>
   <Author>Axel (vilaherba-design)</Author>
-  <Version>0.7.0</Version>
+  <Version>0.8.0</Version>
   <Website>https://github.com/vilaherba-design/BodyMorphVR</Website>
-  <Description>BodyGen for Fallout 4 VR: every NPC gets their own body shape from BodySlide .tri morphs.</Description>
+  <Description>Every NPC of Fallout 4 VR gets one of your BodySlide presets as their body (body and clothes), saved with your game.</Description>
 </fomod>

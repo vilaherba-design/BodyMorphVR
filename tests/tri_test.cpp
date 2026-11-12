@@ -1,5 +1,6 @@
 // BodyMorph VR unit tests (no game): TRI reader and CPU morph application. GPL-3.0-or-later.
 #include "../src/BodyGenIni.h"
+#include "../src/BodySlidePresets.h"
 #include "../src/IniFile.h"
 #include "../src/MorphApply.h"
 #include "../src/MorphList.h"
@@ -452,6 +453,197 @@ int main()
 			for (const auto& r : d4.Rules()) {
 				(void)d4.Roll(r, g);
 			}
+		}
+	}
+
+	// ---- BodySlide presets (BodySlidePresets.h) ----
+	{
+		namespace bs = bodymorph::bsp;
+		// the tiny XML reader
+		{
+			std::vector<std::string> seen;
+			bs::XmlHandler           h;
+			h.open = [&](const bs::XmlElement& e, bool self) { seen.push_back((self ? "s:" : "o:") + e.name + "[" + e.AttrOr("a") + "|" + e.AttrOr("b", "-") + "]"); };
+			h.close = [&](std::string_view n) { seen.push_back("c:" + std::string(n)); };
+			h.text = [&](std::string_view t) { if (!bs::Trim(t).empty()) seen.push_back("t:" + std::string(bs::Trim(t))); };
+			CHECK(bs::WalkXml("\xEF\xBB\xBF<?xml version=\"1.0\"?><!-- c > --><R a=\"x &amp; &quot;y&quot; &#65;&#xe9;\"><K a='1>2' b = \"z\" />text<![CDATA[<raw>]]></R>", h));
+			CHECK(seen.size() == 6);
+			CHECK(seen[0] == "o:R[x & \"y\" A\xC3\xA9|-]");
+			CHECK(seen[1] == "s:K[1>2|z]" && seen[2] == "c:K");
+			CHECK(seen[3] == "t:text" && seen[4] == "t:<raw>" && seen[5] == "c:R");
+			CHECK(!bs::WalkXml("no xml here", h));
+			CHECK(!bs::WalkXml("", h));
+			bs::WalkXml("<a b=\"unterminated", h);  // must not crash
+			bs::WalkXml("<a><!-- never closed", h);
+			bs::WalkXml("< ><a =\"x\" b c=d e='f", h);
+		}
+		// presets: the real "CBBE Curvy" head, sizes, duplicates, bad numbers
+		const std::string presetXml =
+			"<SliderPresets>\n"
+			"<Preset name=\"CBBE Curvy\" set=\"CBBE Body\"><Group name=\"CBBE\" /><SetSlider name=\"Ankles\" size=\"big\" value=\"25\" /><SetSlider name=\"Breasts\" size=\"big\" value=\"30\" />"
+			"<SetSlider name=\"Waist\" size=\"big\" value=\"75\" /><SetSlider name=\"Waist\" size=\"small\" value=\"10\" /><SetSlider name=\"Butt\" value=\"60\" /><SetSlider name=\"Hips\" size=\"big\" value=\"abc\" /></Preset>\n"
+			"<Preset name=\"CBBE Curvy (Outfit)\" set=\"CBBE Body\"><SetSlider name=\"Breasts\" size=\"both\" value=\"20\"/></Preset>\n"
+			"<Preset name=\"CBBE Zeroed Sliders\" set=\"CBBE Body\"><SetSlider name=\"Breasts\" size=\"big\" value=\"0\"/></Preset>\n"
+			"<Preset name=\"cbbe curvy\" set=\"x\"><SetSlider name=\"Breasts\" size=\"big\" value=\"99\"/></Preset>\n"
+			"<Preset set=\"x\"><SetSlider name=\"Breasts\" size=\"big\" value=\"99\"/></Preset>\n"
+			"<Preset name=\"Big\" set=\"CBBE Body\"><SetSlider name=\"Breasts\" size=\"big\" value=\"100\"/><SetSlider name=\"Butt\" size=\"big\" value=\"100\"/></Preset>\n"
+			"<Preset name=\"Mid\" set=\"CBBE Body\"><SetSlider name=\"Breasts\" size=\"big\" value=\"50\"/></Preset>\n"
+			"<Preset name=\"Other body\" set=\"FG\"><SetSlider name=\"FGThing\" size=\"big\" value=\"50\"/><SetSlider name=\"FGMore\" size=\"big\" value=\"50\"/><SetSlider name=\"Breasts\" size=\"big\" value=\"50\"/></Preset>\n"
+			"</SliderPresets>";
+		std::vector<bs::Preset> presets;
+		CHECK(bs::ParsePresets(presetXml, "CBBE.xml", presets) == 6);
+		CHECK(presets.size() == 6 && presets[0].name == "CBBE Curvy" && presets[0].set == "CBBE Body" && presets[0].groups.size() == 1);
+		CHECK(presets[0].big.size() == 3 && presets[0].smallOnly == 1);  // Butt has no size, Hips no number
+		CHECK(presets[0].big[2].first == "Waist" && Near(presets[0].big[2].second, 0.75F));
+		CHECK(bs::ParsePresets("<Preset name=\"MID\"><SetSlider name=\"Breasts\" size=\"big\" value=\"1\"/></Preset>", "later.xml", presets) == 0);  // first of a name wins, across files
+		// the real "BT - Chubby" lines that matter: explicit zeros, a value over 100, sliders left at the set's default
+		const std::string btXml =
+			"\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SliderPresets>\n    <Preset name=\"BT - Chubby\" set=\"BodyTalk4\">\n        <Group name=\"BodyTalk - Bodies\"/>\n"
+			"        <SetSlider name=\"BTAbDefinition\" size=\"big\" value=\"0\"/>\n        <SetSlider name=\"BTBiceps\" size=\"big\" value=\"41\"/>\n        <SetSlider name=\"BTStomachFat\" size=\"big\" value=\"130\"/>\n"
+			"        <SetSlider name=\"Erection\" size=\"big\" value=\"0\"/>\n        <SetSlider name=\"Hips\" size=\"big\" value=\"100\"/>\n    </Preset>\n"
+			"    <Preset name=\"BT - Zero\" set=\"BodyTalk4\"><SetSlider name=\"BTAbDefinition\" size=\"big\" value=\"0\"/><SetSlider name=\"BTBiceps\" size=\"big\" value=\"0\"/><SetSlider name=\"BTStomachFat\" size=\"big\" value=\"0\"/>"
+			"<SetSlider name=\"BTWaist-In\" size=\"big\" value=\"0\"/><SetSlider name=\"Erection\" size=\"big\" value=\"0\"/></Preset>\n</SliderPresets>\n";
+		CHECK(bs::ParsePresets(btXml, "BT-Chubby.xml", presets) == 2);
+		const auto find = [&](const char* n) -> const bs::Preset& { for (const auto& p : presets) if (p.name == n) return p; return presets[0]; };
+
+		// slider sets: the real attribute spelling, OutputFile with an attribute, a nested Data element, zap / uv, a lower-case path
+		const std::string osp =
+			"\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SliderSetInfo version=\"1\">\n"
+			"<SliderSet name=\"CBBE Body\"><DataFolder>CBBE</DataFolder><SourceFile>CBBE.nif</SourceFile><OutputPath>Meshes\\Actors\\Character\\CharacterAssets</OutputPath><OutputFile GenWeights=\"false\">FemaleBody</OutputFile>"
+			"<Slider name=\"Breasts\" invert=\"false\" default=\"0\"><Data name=\"CBBEBreasts\" target=\"CBBE\" local=\"true\">CBBEBody.osd\\CBBEBreasts</Data></Slider>"
+			"<Slider name=\"Waist\" invert=\"false\" default=\"0\"/><Slider name=\"Ankles\" invert=\"false\" default=\"0\"/><Slider name=\"Butt\" invert=\"false\" default=\"0\"/></SliderSet>\n"
+			"<SliderSet name=\"CBBE Body Physics\"><OutputPath>meshes/actors/character/characterassets/</OutputPath><OutputFile>FemaleBody</OutputFile>"
+			"<Slider name=\"Breasts\" invert=\"false\" default=\"0\"/><Slider name=\"Waist\" default=\"0\"/><Slider name=\"Ankles\" default=\"0\"/><Slider name=\"Butt\" default=\"0\"/><Slider name=\"Old\" invert=\"true\" default=\"100\"/>"
+			"<Slider name=\"BodyZap\" default=\"100\" zap=\"true\"/></SliderSet>\n"
+			"<SliderSet name=\"BodyTalk4\"><OutputPath>Meshes\\Actors\\Character\\CharacterAssets</OutputPath><OutputFile GenWeights=\"false\">MaleBody</OutputFile>"
+			"<Slider name=\"Erection\" invert=\"false\" default=\"100\"><Data name=\"x\" target=\"BaseMaleBody:0\" local=\"true\">BodyTalk4-Nude.osd\\x</Data></Slider>"
+			"<Slider name=\"BTBiceps\" invert=\"false\" default=\"100\"/><Slider name=\"BTWaist-In\" invert=\"false\" default=\"100\"/><Slider name=\"BTAbDefinition\" invert=\"false\" default=\"100\"/>"
+			"<Slider name=\"BTStomachFat\" invert=\"false\" default=\"100\"/><Slider name=\"Hips\" invert=\"false\" default=\"0\"/><Slider name=\"BTAreolaSize\" default=\"0\" uv=\"true\"/><Slider name=\"Legacy\" small=\"0\" big=\"40\"/></SliderSet>\n"
+			"<SliderSet name=\"Some Outfit\"><OutputPath>Meshes\\Clothes\\X</OutputPath><OutputFile>F</OutputFile><Slider name=\"Breasts\" default=\"0\"/></SliderSet>\n"
+			"<SliderSet name=\"NoOutput\"><Slider name=\"Breasts\" default=\"0\"/></SliderSet>\n</SliderSetInfo>";
+		std::vector<bs::SliderSet> sets;
+		CHECK(bs::ParseSliderSets(osp, "x.osp", sets) == 5);
+		const std::string kF = "meshes\\actors\\character\\characterassets\\femalebody", kM = "meshes\\actors\\character\\characterassets\\malebody";
+		CHECK(sets[0].output == kF && sets[1].output == kF && sets[2].output == kM && sets[4].output.empty());
+		CHECK(sets[0].sliders.size() == 4 && sets[2].sliders.size() == 8);
+		CHECK(sets[2].Find("erection") && Near(sets[2].Find("erection")->def, 1.0F) && !sets[2].Find("BTAreolaSize")->morph && Near(sets[2].Find("Legacy")->def, 0.4F));
+		CHECK(sets[1].Find("Old")->invert && !sets[1].Find("BodyZap")->morph);
+		// which set builds a body: the recorded choice, else the one with the most morph sliders
+		const std::string sel = "\xEF\xBB\xBF<BuildSelection><OutputChoice path=\"Meshes\\Actors\\Character\\CharacterAssets\\FemaleBody\" choice=\"CBBE Body\"/></BuildSelection>";
+		CHECK(bs::BuildChoice(sel, kF) == "CBBE Body" && bs::BuildChoice(sel, kM).empty());
+		CHECK(bs::PickSet(sets, kF, "CBBE Body") == &sets[0]);
+		CHECK(bs::PickSet(sets, kF, "") == &sets[1] && bs::PickSet(sets, kF, "gone") == &sets[1]);
+		CHECK(bs::PickSet(sets, kM, "") == &sets[2] && bs::PickSet(sets, "meshes\\nothing", "") == nullptr);
+
+		// resolving: defaults for what the preset leaves out, explicit zeros, inversion, values over 100, non-morph sliders dropped
+		const auto value = [](const std::vector<std::pair<std::string, float>>& m, const char* n) { for (const auto& [k, v] : m) if (k == n) return v; return -99.0F; };
+		{
+			const auto chubby = bs::Resolve(find("BT - Chubby"), &sets[2]);
+			CHECK(Near(value(chubby, "BTBiceps"), 0.41F) && Near(value(chubby, "BTStomachFat"), 1.3F) && Near(value(chubby, "Hips"), 1.0F));
+			CHECK(Near(value(chubby, "BTWaist-In"), 1.0F));                                               // not named: the set's default, not 0
+			CHECK(value(chubby, "BTAbDefinition") == -99.0F && value(chubby, "Erection") == -99.0F);     // explicit 0
+			CHECK(value(chubby, "BTAreolaSize") == -99.0F && Near(value(chubby, "Legacy"), 0.4F));
+			const auto zero = bs::Resolve(find("BT - Zero"), &sets[2]);
+			CHECK(zero.size() == 1 && zero[0].first == "Legacy");
+			const auto defaults = bs::Resolve(bs::Preset{}, &sets[2]);
+			CHECK(defaults.size() == 6 && Near(value(defaults, "Erection"), 1.0F));
+			// a body built at the defaults: the preset is given as the difference (negative where it lowers a default)
+			const auto delta = bs::Subtract(chubby, defaults);
+			CHECK(Near(value(delta, "BTBiceps"), -0.59F) && Near(value(delta, "BTAbDefinition"), -1.0F) && Near(value(delta, "BTStomachFat"), 0.3F) && Near(value(delta, "Hips"), 1.0F));
+			CHECK(value(delta, "BTWaist-In") == -99.0F && value(delta, "Legacy") == -99.0F);
+			const auto raw = bs::Resolve(find("BT - Chubby"), nullptr);
+			CHECK(raw.size() == 3);
+			const auto inv = bs::Resolve(find("Mid"), &sets[1]);  // "Old" is inverted with default 100: 1 - 1 = 0
+			CHECK(inv.size() == 1 && Near(value(inv, "Breasts"), 0.5F));
+			bs::Preset withOld = find("Mid");
+			withOld.big.emplace_back("old", 0.25F);
+			CHECK(Near(value(bs::Resolve(withOld, &sets[1]), "Old"), 0.75F));
+		}
+
+		// the pools: a female .tri (CBBE: Breasts, Waist, Ankles, Butt) and a male one
+		const auto makeTri = [](const char* shape, std::initializer_list<std::pair<const char*, int>> morphs) {
+			Writer w;
+			w.b = { std::byte{ 'P' }, std::byte{ 'I' }, std::byte{ 'R' }, std::byte{ 'T' } };
+			w.put<std::uint16_t>(1);
+			w.name(shape);
+			w.put<std::uint16_t>(static_cast<std::uint16_t>(morphs.size()));
+			std::uint16_t vertex = 0;
+			for (const auto& [n, amount] : morphs) {
+				w.name(n);
+				w.put<float>(0.01F);
+				w.put<std::uint16_t>(1);
+				w.put<std::uint16_t>(vertex++);
+				w.put<std::int16_t>(static_cast<std::int16_t>(amount)); w.put<std::int16_t>(0); w.put<std::int16_t>(0);
+			}
+			TriFile t;
+			CHECK(t.Parse(w.b));
+			return t;
+		};
+		const TriFile femaleTri = makeTri("CBBE", { { "Breasts", 100 }, { "Waist", 100 }, { "Ankles", 100 }, { "Butt", 100 } });
+		const TriFile maleTri = makeTri("BaseMaleBody:0", { { "Erection", 100 }, { "BTBiceps", 100 }, { "BTWaist-In", 100 }, { "BTAbDefinition", 100 }, { "BTStomachFat", 100 }, { "Hips", 100 } });
+		CHECK(bs::MorphNames(femaleTri).size() == 4);
+		CHECK(Near(bs::Displacement(femaleTri, { { "Breasts", 1.0F } }), 1.0F) && Near(bs::Displacement(femaleTri, { { "breasts", 0.5F }, { "Nope", 3.0F } }), 0.5F));
+		CHECK(bs::Displacement(femaleTri, {}) == 0.0F);
+		bs::PoolOptions opt;
+		opt.exclude = { "(outfit)", "zeroed" };
+		opt.never = { "erection" };
+		std::map<std::string, int> weights{ { "CBBE Curvy", 5 } };
+		opt.weightOf = [&](const std::string& n) { const auto it = weights.find(n); return it == weights.end() ? -1 : it->second; };
+		std::vector<std::string> notes;
+		auto women = bs::BuildPool(presets, &sets[0], femaleTri, bs::MorphNames(maleTri), opt, {}, &notes);
+		CHECK(women.size() == 3);  // Curvy, Big, Mid; not the outfit copy, the zeroed one, the other body's or the men's
+		const auto body = [](const std::vector<bs::Body>& pool, const char* n) -> const bs::Body* { for (const auto& b : pool) if (b.name == n) return &b; return nullptr; };
+		CHECK(body(women, "CBBE Curvy") && body(women, "CBBE Curvy")->weight == 5 && !body(women, "CBBE Curvy")->autoWeight && body(women, "CBBE Curvy")->morphs.size() == 3);
+		CHECK(body(women, "Mid") && body(women, "Mid")->weight == 2 && body(women, "Mid")->autoWeight);  // in the middle of the pool (Curvy is the closest to the base body)
+		CHECK(body(women, "Big") && body(women, "Big")->weight == 1);                                    // the farthest: least often
+		CHECK(!body(women, "Other body") && !body(women, "BT - Chubby"));
+		CHECK(notes.size() == 2 && notes[0].find("Outfit") != std::string::npos && notes[1].find("Zeroed") != std::string::npos);
+		weights["Big"] = 0;  // 0 = never
+		opt.autoWeights = false;
+		opt.defaultWeight = 4;
+		women = bs::BuildPool(presets, &sets[0], femaleTri, bs::MorphNames(maleTri), opt);
+		CHECK(women.size() == 2 && body(women, "Mid")->weight == 4);
+		opt.exclude.clear();
+		women = bs::BuildPool(presets, &sets[0], femaleTri, {}, opt);
+		CHECK(women.size() == 3 && body(women, "CBBE Curvy (Outfit)") && !body(women, "CBBE Zeroed Sliders"));  // a body that changes nothing is never handed out
+		// men: defaults resolved, the state morph never set, "BT - Zero" changes nothing on a zero-built body
+		auto men = bs::BuildPool(presets, &sets[2], maleTri, bs::MorphNames(femaleTri), opt);
+		CHECK(men.size() == 1 && men[0].name == "BT - Chubby" && men[0].morphs.size() == 4);
+		CHECK(Near(value(men[0].morphs, "BTWaist-In"), 1.0F) && value(men[0].morphs, "Erection") == -99.0F && value(men[0].morphs, "Legacy") == -99.0F);
+		// ... and on a body built at the set's defaults both are bodies, as differences
+		men = bs::BuildPool(presets, &sets[2], maleTri, bs::MorphNames(femaleTri), opt, bs::Resolve(bs::Preset{}, &sets[2]));
+		CHECK(men.size() == 2 && body(men, "BT - Zero") && Near(value(body(men, "BT - Zero")->morphs, "BTBiceps"), -1.0F) && value(body(men, "BT - Zero")->morphs, "Erection") == -99.0F);
+
+		// weighted pick: the shares follow the weights; an empty pool gives nothing
+		{
+			std::vector<bs::Body> pool(3);
+			pool[0].name = "a"; pool[0].weight = 3;
+			pool[1].name = "b"; pool[1].weight = 1;
+			pool[2].name = "c"; pool[2].weight = 0;
+			std::mt19937               rng(7);
+			std::map<std::string, int> hits;
+			for (int i = 0; i < 4000; ++i) {
+				++hits[bs::Pick(pool, rng)->name];
+			}
+			CHECK(hits["c"] == 0 && hits["a"] > 2850 && hits["a"] < 3150 && hits["a"] + hits["b"] == 4000);
+			CHECK(bs::Pick(std::vector<bs::Body>{}, rng) == nullptr);
+			pool.resize(0);
+			CHECK(bs::MarkerName("Karma") == "BMVR_Preset_Karma");
+		}
+		// garbage never crashes
+		{
+			std::string            junk;
+			const std::string_view alphabet = "<>/=\"' &;#!-?[]aZ09\r\n";
+			for (int i = 0; i < 6000; ++i) {
+				junk.push_back(alphabet[static_cast<std::size_t>(i * 11 + i / 7) % alphabet.size()]);
+			}
+			std::vector<bs::Preset>    p;
+			std::vector<bs::SliderSet> ss;
+			bs::ParsePresets(junk, "j", p);
+			bs::ParseSliderSets(junk, "j", ss);
+			(void)bs::BuildChoice(junk, "x");
+			bs::ParsePresets("<Preset name=\"a\"><SetSlider name=\"b\" size=\"big\" value=\"nan\"/><SetSlider name=\"c\" size=\"big\" value=\"1e99\"/>", "j", p);
+			CHECK(p.back().name == "a" && p.back().big.empty());
 		}
 	}
 
