@@ -53,7 +53,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 8, 0, 0 };
+	constexpr REL::Version kVersion{ 0, 8, 1, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -2530,7 +2530,21 @@ namespace
 	{
 		const auto addr = REL::Module::get().base() + kRvaAttachSkinnedObject;
 		std::uint8_t now[sizeof(kAttachPrologue)]{};
-		if (!SafeCopy(now, reinterpret_cast<const void*>(addr), sizeof(now)) || std::memcmp(now, kAttachPrologue, sizeof(now)) != 0) {
+		if (!SafeCopy(now, reinterpret_cast<const void*>(addr), sizeof(now))) {
+			spdlog::error("AttachSkinnedObject cannot be read at RVA {:X}: auto-apply NOT installed (F7 / F6 still work)", kRvaAttachSkinnedObject);
+			return;
+		}
+		if (now[0] == 0xE9) {
+			// Another plugin hooked this function first with a 5-byte jmp: chain to it. Its hook runs the game's function, so it still runs once.
+			std::int32_t rel = 0;
+			std::memcpy(&rel, now + 1, sizeof(rel));
+			const auto previous = addr + 5 + static_cast<std::intptr_t>(rel);
+			g_attachOriginal = reinterpret_cast<AttachSkinnedObject_t*>(previous);
+			F4SE::GetTrampoline().write_branch<5>(addr, reinterpret_cast<std::uintptr_t>(&AttachSkinnedObject_Hook));
+			spdlog::info("AttachSkinnedObject hook installed at RVA {:X}, chained to the hook another plugin installed first", kRvaAttachSkinnedObject);
+			return;
+		}
+		if (std::memcmp(now, kAttachPrologue, sizeof(now)) != 0) {
 			spdlog::error("AttachSkinnedObject prologue does not match at RVA {:X}: auto-apply NOT installed (F7 / F6 still work)", kRvaAttachSkinnedObject);
 			return;
 		}
@@ -2950,7 +2964,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00080000;
+	a_info->version = 0x00080100;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}
