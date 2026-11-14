@@ -53,7 +53,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 8, 1, 0 };
+	constexpr REL::Version kVersion{ 0, 8, 2, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -1715,6 +1715,7 @@ namespace
 		struct PresetSex
 		{
 			std::vector<bs::Body> pool;
+			std::vector<std::pair<std::string, float>> base;  // what the body on disk was built with (sMaleBuiltWith / sFemaleBuiltWith), resolved
 			bool                  triFound = false;
 			std::string           setName;
 		};
@@ -1725,6 +1726,7 @@ namespace
 			bool                     enabled = false;
 			bool                     overGeneral = true;  // presets win over "All|..." lines of BodyGen ini files
 			bool                     notify = true;
+			float                    variation = 0.0f;  // 0.8.2: [Presets] iVariationPercent / 100, every NPC's sliders vary by up to this share
 			int                      presetsRead = 0;
 			std::string              problem;  // what the player is told once ("" = nothing to tell)
 		};
@@ -1807,6 +1809,8 @@ namespace
 				opt.never.insert(n);
 			}
 			opt.weightOf = [&a_ini](const std::string& a_name) { return a_ini.GetInt("PresetWeights", a_name, -1); };
+			st.variation = static_cast<float>(std::clamp(a_ini.GetInt("Presets", "iVariationPercent", 20), 0, 100)) / 100.0f;
+			spdlog::info("[presets] variation per NPC: {}", st.variation > 0.0f ? std::format("every slider of the preset x {:.2f} to {:.2f}", 1.0f - st.variation, 1.0f + st.variation) : std::string("off"));
 
 			struct SexCfg
 			{
@@ -1850,6 +1854,7 @@ namespace
 				}
 				std::vector<std::string> notes;
 				st.sex[i].pool = bs::BuildPool(presets, set, tri[i], names[1 - i], opt, base, &notes);
+				st.sex[i].base = base;
 				int total = 0;
 				for (const auto& b : st.sex[i].pool) {
 					total += b.weight;
@@ -2077,7 +2082,7 @@ namespace
 					body = bs::Pick(*pool, g_gen.rng);
 				}
 				if (body) {
-					morphs = body->morphs;
+					morphs = bs::Vary(*body, g_presets.sex[a_female ? 1 : 0].base, g_presets.variation, g_gen.rng);
 					morphs.emplace_back(bs::MarkerName(body->name), 1.0f);
 				} else if (rule) {
 					morphs = g_gen.db.Roll(*rule, g_gen.rng);
@@ -2098,7 +2103,8 @@ namespace
 					levels += std::format("{}{:08X}{}{}", levels.empty() ? "" : " > ", c.formID, c.isNpc ? "" : " (leveled list)", c.race.empty() ? std::string() : " " + c.race);
 				}
 				spdlog::info("[bodygen] actor {:08X} ({}) chain [{}]: {}{}", id, a_female ? "female" : "male", levels,
-					body ? std::format("BodySlide preset '{}' (weight {}): {}", body->name, body->weight, what)
+					body ? std::format("BodySlide preset '{}' (weight {}{}): {}", body->name, body->weight,
+								g_presets.variation > 0.0f ? std::format(", varied +-{:.0f} %", g_presets.variation * 100.0f) : std::string(), what)
 						 : rule ? std::format("line {} '{}' rolled {} morph(s){}{}", rule->source, rule->key, morphs.size(), morphs.empty() ? "" : ": ", what) : std::string("no line or preset matches"),
 					a_force ? " (forced)" : "");
 			}
@@ -2964,7 +2970,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00080100;
+	a_info->version = 0x00080200;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}

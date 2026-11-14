@@ -634,6 +634,7 @@ namespace bodymorph::bsp
 		std::string                                name;    // the preset's name
 		std::string                                file;
 		std::vector<std::pair<std::string, float>> morphs;  // only morphs the body's .tri has
+		std::vector<std::pair<std::string, float>> values;  // 0.8.2: the preset's own slider values (before the base body is subtracted), same filter: Vary() works on these
 		float                                      fit = 0.0f;   // share of the preset's own sliders the .tri has
 		float                                      size = 0.0f;  // Displacement(): how far from the base body
 		int                                        weight = 0;
@@ -701,7 +702,13 @@ namespace bodymorph::bsp
 			b.name = p.name;
 			b.file = p.file;
 			b.fit = fit;
-			for (auto& m : Subtract(Resolve(p, a_set), a_base)) {
+			const auto resolved = Resolve(p, a_set);
+			for (const auto& m : resolved) {
+				if (mine.count(Lower(m.first)) && !a_opt.never.count(Lower(m.first))) {
+					b.values.push_back(m);
+				}
+			}
+			for (auto& m : Subtract(resolved, a_base)) {
 				if (mine.count(Lower(m.first)) && !a_opt.never.count(Lower(m.first))) {
 					b.morphs.push_back(std::move(m));
 				}
@@ -761,6 +768,32 @@ namespace bodymorph::bsp
 			}
 		}
 		return &a_pool.back();
+	}
+
+	// 0.8.2: the morphs of one NPC's copy of a body, every slider the preset sets scaled by its own random factor in [1 - a_share, 1 + a_share] (a_share 0.2 = +-20 %),
+	// then the base body subtracted like in BuildPool. Sliders the preset leaves at 0 stay at 0. a_share <= 0: the body's morphs unchanged.
+	template <class Rng>
+	[[nodiscard]] std::vector<std::pair<std::string, float>> Vary(const Body& a_body, const std::vector<std::pair<std::string, float>>& a_base, float a_share, Rng& a_rng)
+	{
+		if (!(a_share > 0.0f)) {
+			return a_body.morphs;
+		}
+		a_share = std::min(a_share, 1.0f);
+		std::uniform_real_distribution<float> factor(1.0f - a_share, 1.0f + a_share);
+		auto                                  values = a_body.values;
+		for (auto& [name, value] : values) {
+			value *= factor(a_rng);
+		}
+		std::unordered_set<std::string> keep;  // the morphs this body may set: its own values and what BuildPool kept of the base
+		for (const auto& [name, value] : a_body.values) {
+			keep.insert(Lower(name));
+		}
+		for (const auto& [name, value] : a_body.morphs) {
+			keep.insert(Lower(name));
+		}
+		auto out = Subtract(std::move(values), a_base);
+		out.erase(std::remove_if(out.begin(), out.end(), [&](const auto& m) { return !keep.count(Lower(m.first)); }), out.end());
+		return out;
 	}
 
 	// The marker stored with a preset body: no .tri has it, so it moves nothing, but it records which preset the NPC got and keeps the roll even when

@@ -620,6 +620,39 @@ int main()
 		men = bs::BuildPool(presets, &sets[2], maleTri, bs::MorphNames(femaleTri), opt, bs::Resolve(bs::Preset{}, &sets[2]));
 		CHECK(men.size() == 2 && body(men, "BT - Zero") && Near(value(body(men, "BT - Zero")->morphs, "BTBiceps"), -1.0F) && value(body(men, "BT - Zero")->morphs, "Erection") == -99.0F);
 
+		// 0.8.2 variation: every slider the preset sets is scaled by its own factor in [0.8, 1.2], the base subtracted afterwards, zero sliders stay zero
+		{
+			std::vector<std::pair<std::string, float>> base{ { "Breasts", 0.4F }, { "Waist", 0.2F } };
+			const auto pool = bs::BuildPool(presets, &sets[0], femaleTri, bs::MorphNames(maleTri), opt, base);
+			const auto* curvy = body(pool, "CBBE Curvy");
+			CHECK(curvy && !curvy->values.empty());
+			std::mt19937 rng(11);
+			CHECK(bs::Vary(*curvy, base, 0.0F, rng) == curvy->morphs);  // off: the body as it is
+			bool differs = false;
+			for (int i = 0; i < 200; ++i) {
+				const auto v = bs::Vary(*curvy, base, 0.2F, rng);
+				for (const auto& [name, own] : curvy->values) {
+					float b = 0.0F;
+					for (const auto& [bn, bv] : base) {
+						if (bs::Lower(bn) == bs::Lower(name)) {
+							b = bv;
+						}
+					}
+					const float got = value(v, name.c_str()) == -99.0F ? 0.0F : value(v, name.c_str());
+					const float lo = std::min(own * 0.8F, own * 1.2F) - b - 1e-4F, hi = std::max(own * 0.8F, own * 1.2F) - b + 1e-4F;
+					CHECK(got >= lo && got <= hi);
+					differs = differs || std::fabs(got - (own - b)) > 1e-3F;
+				}
+				for (const auto& [name, m] : v) {  // nothing outside what the body may set
+					bool known = false;
+					for (const auto& [n2, x] : curvy->values) known = known || bs::Lower(n2) == bs::Lower(name);
+					for (const auto& [n2, x] : curvy->morphs) known = known || bs::Lower(n2) == bs::Lower(name);
+					CHECK(known);
+				}
+			}
+			CHECK(differs);
+		}
+
 		// weighted pick: the shares follow the weights; an empty pool gives nothing
 		{
 			std::vector<bs::Body> pool(3);
