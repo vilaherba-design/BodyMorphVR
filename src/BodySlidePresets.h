@@ -714,7 +714,9 @@ namespace bodymorph::bsp
 				}
 			}
 			b.size = Displacement(a_tri, b.morphs);
-			if (b.morphs.empty() || b.size <= 0.0f) {
+			// 0.8.3: the preset the body was built with (a_base) is a body too: it differs from the base in nothing, but it sets sliders of its own, so Vary() still
+			// gives every NPC a varied copy of it. Only a preset that sets nothing at all (zeroed sliders on a zero-built body) is left out.
+			if (b.values.empty() && (b.morphs.empty() || b.size <= 0.0f)) {
 				note(p, "changes nothing on this body (all sliders at the base value)");
 				continue;
 			}

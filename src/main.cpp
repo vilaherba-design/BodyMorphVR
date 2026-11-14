@@ -53,7 +53,7 @@
 namespace
 {
 	constexpr auto kName = "BodyMorphVR";
-	constexpr REL::Version kVersion{ 0, 8, 2, 0 };
+	constexpr REL::Version kVersion{ 0, 8, 3, 0 };
 
 	std::atomic<int> g_probeKey{ 0x77 };    // F8
 	std::atomic<int> g_applyKey{ 0x76 };    // F7 (F5/F9 are the game's quick save / quick load)
@@ -2970,7 +2970,7 @@ extern "C" __declspec(dllexport) bool F4SEAPI F4SEPlugin_Query(const F4SE::Query
 {
 	a_info->infoVersion = F4SE::PluginInfo::kVersion;
 	a_info->name = kName;
-	a_info->version = 0x00080200;
+	a_info->version = 0x00080300;
 	if (a_f4se->IsEditor()) {
 		return false;
 	}

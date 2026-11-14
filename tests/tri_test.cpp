@@ -652,6 +652,17 @@ int main()
 			}
 			CHECK(differs);
 		}
+		// 0.8.3: the preset the body was built with stays in the pool (it is a body), with no morphs of its own; varied, it moves
+		{
+			auto curvyPreset = presets.front();
+			for (const auto& pr : presets) if (pr.name == "CBBE Curvy") curvyPreset = pr;
+			const auto base = bs::Resolve(curvyPreset, &sets[0]);
+			const auto pool = bs::BuildPool(presets, &sets[0], femaleTri, bs::MorphNames(maleTri), opt, base);
+			const auto* self = body(pool, "CBBE Curvy");
+			CHECK(self && self->morphs.empty() && !self->values.empty());
+			std::mt19937 rng(5);
+			CHECK(self && !bs::Vary(*self, base, 0.2F, rng).empty());
+		}
 
 		// weighted pick: the shares follow the weights; an empty pool gives nothing
 		{
