@@ -18,7 +18,7 @@ BodyTalk note: its flat-game hand meshes (`MaleHands.nif`, `1stPersonMaleHands.n
 Install any BodySlide preset (a file in `Tools\BodySlide\SliderPresets`). That is all: nothing to build, nothing to convert. At the next game start it is in the draw.
 - How often a preset comes up: `[PresetWeights]` in `BodyMorphVR.ini` (`Preset name=3`; `0` = never). Presets without a line are weighted by themselves:
   the mildest third of your presets 3, the middle 2, the most extreme 1.
-- Presets named "(Outfit)", "Zeroed" and "CBBE Vanilla" are left out (`sExclude`). A preset made for another body (its sliders are not in your `.tri`) is left out too.
+- Presets named "(Outfit)" and "Zeroed" are left out (`sExclude`). A preset made for another body (its sliders are not in your `.tri`) is left out too.
 - The log lists every preset, its weight and its share: `Documents\My Games\Fallout4VR\F4SE\BodyMorphVR.log`, lines `[presets]`.
 
 ## Files
