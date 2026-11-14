@@ -1804,7 +1804,7 @@ namespace
 			opt.minFit = static_cast<float>(std::clamp(a_ini.GetInt("Presets", "iMinFitPercent", 50), 1, 100)) / 100.0f;
 			opt.defaultWeight = std::clamp(a_ini.GetInt("Presets", "iDefaultWeight", 2), 1, 100);
 			opt.autoWeights = a_ini.GetInt("Presets", "bAutoWeights", 1) != 0;
-			opt.exclude = SplitList(a_ini.GetString("Presets", "sExclude", "(outfit),zeroed"));
+			opt.exclude = SplitList(a_ini.GetString("Presets", "sExclude", "(outfit),zeroed,cbbe vanilla"));
 			for (const auto& n : SplitList(a_ini.GetString("Presets", "sNeverMorphs", "Erection,Erection Up,Erection Down,CErection,VaginaPenetrate,AnusPenetrate,VaginaSpread,ButtcheeksSpread"))) {
 				opt.never.insert(n);
 			}
